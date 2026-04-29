@@ -82,6 +82,58 @@ A random hex suffix is appended to `app-name-prefix` to keep concurrent runs iso
 
 See `test-on-fly/action.yml` for the full input list.
 
+### `prepare-matrix`
+
+Filter a JSON entry list down to user-selected items, or fall back to the full list when nothing is selected. Designed for a `prepare-matrix` job whose output feeds `strategy.matrix.include` (object array) or `strategy.matrix.<key>` (string array) via `fromJSON()`.
+
+```yaml
+jobs:
+  prepare-matrix:
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.pm.outputs.matrix }}
+    steps:
+      - id: pm
+        uses: remotebrowser/shared-github-actions/prepare-matrix@v1
+        with:
+          # One JSON value per line. Strings are quoted; objects use full JSON.
+          # Add or remove an entry by adding/deleting a line — no commas, no brackets.
+          entries: |
+            { "env": "demo", "config": "fly", "app_name": "flyfleet"     }
+            { "env": "dev",  "config": "dev", "app_name": "flyfleet-dev" }
+          # Newline-separated list of selected keys. Each key is matched against
+          # `key-field` of the entry (object array) or the entry value itself
+          # (string array). Empty list → fall back to every entry, so on
+          # push/pull_request triggers (where workflow_dispatch inputs are empty)
+          # all entries run.
+          selections: |
+            ${{ inputs.demo && 'demo' || '' }}
+            ${{ inputs.dev  && 'dev'  || '' }}
+          key-field: env
+
+  deploy:
+    needs: prepare-matrix
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        include: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
+    steps:
+      - run: echo "deploying ${{ matrix.app_name }} with config ${{ matrix.config }}"
+```
+
+For a string-array matrix, omit `key-field` and quote each entry:
+
+```yaml
+entries: |
+  "direct"
+  "pool"
+selections: |
+  ${{ inputs.direct && 'direct' || '' }}
+  ${{ inputs.pool   && 'pool'   || '' }}
+```
+
+See `prepare-matrix/action.yml` for the full input list.
+
 ## Versioning
 
 - Pin to `@v1` for auto-patch updates, or to a full commit SHA for strict supply-chain posture.
