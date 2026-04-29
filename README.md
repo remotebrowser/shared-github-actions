@@ -61,7 +61,7 @@ See `deploy-fly/action.yml` for the full input list.
 
 ### `test-on-fly`
 
-Deploy a throwaway Fly app, wait for a result marker file written by the container, pull logs back as an artifact, destroy the app.
+Deploy a throwaway Fly app, wait for a result marker file written by the container, pull logs back as an artifact, destroy the app. Secrets are staged the same way as `deploy-fly`: Doppler → `GIT_REV` → `extra-secrets`, last write wins on duplicate keys. No stale-cleanup pass since the test app is freshly created.
 
 ```yaml
 - uses: remotebrowser/shared-github-actions/test-on-fly@v1
@@ -73,9 +73,12 @@ Deploy a throwaway Fly app, wait for a result marker file written by the contain
     app-name-prefix: test-flyfleet-direct
     fly-toml: fly.test.toml
     dockerfile: Dockerfile.test
+    extra-secrets: |   # optional
+      MODE=direct
+      CONTAINER_IMAGE=registry.fly.io/keep-chrome-live-ci:latest
 ```
 
-A random hex suffix is appended to `app-name-prefix` to keep concurrent runs isolated.
+A random hex suffix is appended to `app-name-prefix` to keep concurrent runs isolated. The deployed test container can read its commit SHA from the `GIT_REV` env var.
 
 See `test-on-fly/action.yml` for the full input list.
 

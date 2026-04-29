@@ -29,6 +29,14 @@ inputs:
   doppler-config:
     description: Doppler config / environment name. Required when doppler-token is set.
     required: false
+  extra-secrets:
+    description: >
+      Additional KEY=VALUE pairs (one per line, dotenv format) to set as Fly
+      secrets on the test app. Applied after Doppler, so a key here overrides
+      the same key from Doppler. Values are not auto-masked — pass them via
+      ${{ secrets.* }} in the workflow if they're sensitive.
+    required: false
+    default: ""
   result-file:
     description: Path inside the container to poll for a result marker.
     required: false
@@ -94,15 +102,29 @@ runs:
         FLY_API_TOKEN: ${{ inputs.fly-api-token }}
       run: flyctl apps create "$TEST_ON_FLY_APP"
 
-    - name: Import secrets
-      if: inputs.doppler-token != ''
+    - name: Stage secrets
       shell: bash
       env:
         DOPPLER_TOKEN: ${{ inputs.doppler-token }}
         FLY_API_TOKEN: ${{ inputs.fly-api-token }}
+        EXTRA_SECRETS: ${{ inputs.extra-secrets }}
       run: |
-        doppler-export "${{ inputs.doppler-project }}" "${{ inputs.doppler-config }}" \
-          | flyctl secrets import --app "$TEST_ON_FLY_APP" --stage
+        set -euo pipefail
+
+        # Build SECRETS in memory: Doppler first, then GIT_REV, then extra-secrets
+        # last so later lines override earlier ones in flyctl secrets import.
+        # No stale-cleanup pass — the test app is freshly created above.
+        SECRETS=""
+        if [ -n "$DOPPLER_TOKEN" ]; then
+          SECRETS=$(doppler-export "${{ inputs.doppler-project }}" "${{ inputs.doppler-config }}")
+          if ! grep -qE '^[A-Za-z_][A-Za-z0-9_]*=' <<<"$SECRETS"; then
+            echo "refusing to proceed: Doppler returned 0 keys"
+            exit 1
+          fi
+        fi
+        SECRETS=$(printf '%s\nGIT_REV="%s"\n%s\n' "$SECRETS" "$GITHUB_SHA" "$EXTRA_SECRETS")
+
+        flyctl secrets import --app "$TEST_ON_FLY_APP" --stage <<<"$SECRETS"
 
     - name: Deploy test app
       shell: bash
