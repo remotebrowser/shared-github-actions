@@ -109,8 +109,11 @@ runs:
         HEALTH_MATCH: ${{ inputs.health-match }}
         HEALTH_TIMEOUT_SECONDS: ${{ inputs.health-timeout-seconds }}
       run: |
+        # -fs (not -fsS): stay quiet during startup. Per-attempt errors during
+        # the poll are noise — `timeout` non-zero plus the next step's container
+        # logs tell you what actually failed if the container never comes up.
         timeout "$HEALTH_TIMEOUT_SECONDS" bash -c \
-          'until curl -fsS "$1" | grep -q "$2"; do sleep 1; done' _ "$HEALTH_URL" "$HEALTH_MATCH"
+          'until curl -fs "$1" | grep -q "$2"; do sleep 1; done' _ "$HEALTH_URL" "$HEALTH_MATCH"
 
     - name: Container logs
       if: always()
