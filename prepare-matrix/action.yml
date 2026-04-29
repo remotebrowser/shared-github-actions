@@ -68,4 +68,24 @@ runs:
             $all | map(select(. as $k | $sel | index($k)))')
         fi
         echo "matrix=$picked" >> "$GITHUB_OUTPUT"
-        echo "matrix: $picked"
+
+        # Visible summary in the workflow log + the run's Summary tab.
+        total=$(jq 'length' <<<"$all")
+        kept=$(jq 'length' <<<"$picked")
+        if [ "$kept" = "$total" ]; then
+          header="Selected matrix entries ($kept of $total — full list)"
+        else
+          header="Selected matrix entries ($kept of $total — filtered)"
+        fi
+        echo "::group::$header"
+        jq -r '.[] | "  - " + (if type == "string" then . else tostring end)' <<<"$picked"
+        echo "::endgroup::"
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+          {
+            echo "### $header"
+            echo
+            echo '```json'
+            jq . <<<"$picked"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+        fi

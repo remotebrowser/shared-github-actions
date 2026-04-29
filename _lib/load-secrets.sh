@@ -12,6 +12,9 @@
 #
 # Outputs (exported into caller shell):
 #   FLY_API_TOKEN  resolved token (also written to $GITHUB_ENV and ::add-mask::'d)
+#   FLY_ORG_SLUG   extracted from Doppler when present (also written to $GITHUB_ENV).
+#                  Empty if Doppler doesn't have it. Callers needing --org should
+#                  check and either fall back or fail with a clearer error.
 #   SECRETS        full dotenv stream: Doppler + GIT_REV + EXTRA_SECRETS
 #
 # Errors via `return 1` so that callers' `set -e` propagates without killing
@@ -50,6 +53,18 @@ echo "::add-mask::$FLY_API_TOKEN"
   echo "__EOF_FLY_API_TOKEN__"
 } >>"$GITHUB_ENV"
 export FLY_API_TOKEN
+
+# Extract FLY_ORG_SLUG from Doppler so callers can pass --org to flyctl
+# (notably `flyctl apps create`, which prompts interactively without it).
+# Not masked — org slugs are public.
+FLY_ORG_SLUG=""
+if [ -n "$SECRETS" ]; then
+  FLY_ORG_SLUG=$(sed -n 's/^FLY_ORG_SLUG="\(.*\)"$/\1/p' <<<"$SECRETS" | head -n1)
+fi
+if [ -n "$FLY_ORG_SLUG" ]; then
+  echo "FLY_ORG_SLUG=$FLY_ORG_SLUG" >>"$GITHUB_ENV"
+fi
+export FLY_ORG_SLUG
 
 # Final stream: Doppler first, then GIT_REV, then EXTRA_SECRETS (last wins on dup keys).
 SECRETS=$(printf '%s\nGIT_REV="%s"\n%s\n' "$SECRETS" "$GITHUB_SHA" "${EXTRA_SECRETS:-}")

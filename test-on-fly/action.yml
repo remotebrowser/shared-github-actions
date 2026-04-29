@@ -111,10 +111,13 @@ runs:
         EXTRA_SECRETS: ${{ inputs.extra-secrets }}
       run: |
         set -euo pipefail
-        # Resolves FLY_API_TOKEN (input vs Doppler) and exports SECRETS via a
-        # single doppler-export call. No stale-cleanup pass — app is fresh.
+        # Resolves FLY_API_TOKEN + FLY_ORG_SLUG (from input vs Doppler) and
+        # exports SECRETS via a single doppler-export call. No stale-cleanup
+        # pass — the app is fresh.
         . "$GITHUB_ACTION_PATH/../_lib/load-secrets.sh"
-        flyctl apps create "$TEST_ON_FLY_APP"
+        org_args=()
+        [ -n "${FLY_ORG_SLUG:-}" ] && org_args=(--org "$FLY_ORG_SLUG")
+        flyctl apps create "$TEST_ON_FLY_APP" "${org_args[@]}"
         flyctl secrets import --app "$TEST_ON_FLY_APP" --stage <<<"$SECRETS"
 
     - name: Deploy test app
