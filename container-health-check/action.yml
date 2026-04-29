@@ -27,14 +27,28 @@ inputs:
     required: false
     default: ""
   health-url:
-    description: URL polled with `curl -fsS` until `health-match` appears in the body.
-    required: true
+    description: >
+      URL polled with `curl -fs` until `health-match` appears in the body.
+      Single-check shortcut. Ignored when `health-checks` is non-empty.
+    required: false
+    default: ""
   health-match:
-    description: Substring required in the curl response body.
+    description: Substring required in the curl response body for `health-url`.
     required: false
     default: OK
+  health-checks:
+    description: >
+      Multiple health endpoints to poll, one JSON object per line. Each
+      object: `{"url": "...", "match": "..."}`. `match` is optional and
+      defaults to `OK`. Checks run sequentially against the same container,
+      each gets the full `health-timeout-seconds` budget. Use this instead
+      of a follow-up curl step in your workflow — the container is removed
+      in this action's `always()` step, so external polling after the
+      action returns will fail. Wins over `health-url` when both are set.
+    required: false
+    default: ""
   health-timeout-seconds:
-    description: Hard timeout for the health-check loop.
+    description: Hard timeout for each health-check poll loop.
     required: false
     default: "180"
   doppler-token:
@@ -124,18 +138,37 @@ runs:
         fi
         docker run -d --name "$CONTAINER" "${port_args[@]}" "${env_args[@]}" "${extra_args[@]}" "$IMAGE"
 
-    - name: Wait for health check
+    - name: Wait for health checks
       shell: bash
       env:
         HEALTH_URL: ${{ inputs.health-url }}
         HEALTH_MATCH: ${{ inputs.health-match }}
+        HEALTH_CHECKS: ${{ inputs.health-checks }}
         HEALTH_TIMEOUT_SECONDS: ${{ inputs.health-timeout-seconds }}
       run: |
-        # -fs (not -fsS): stay quiet during startup. Per-attempt errors during
-        # the poll are noise — `timeout` non-zero plus the next step's container
-        # logs tell you what actually failed if the container never comes up.
-        timeout "$HEALTH_TIMEOUT_SECONDS" bash -c \
-          'until curl -fs "$1" | grep -q "$2"; do sleep 1; done' _ "$HEALTH_URL" "$HEALTH_MATCH"
+        set -euo pipefail
+        if [ -n "$HEALTH_CHECKS" ]; then
+          # Strip blank lines, then slurp into a JSON array. jq will fail with
+          # a parse error if any line is malformed.
+          checks=$(grep -v '^[[:space:]]*$' <<<"$HEALTH_CHECKS" | jq -s '.')
+        elif [ -n "$HEALTH_URL" ]; then
+          checks=$(jq -n --arg u "$HEALTH_URL" --arg m "$HEALTH_MATCH" \
+            '[{url: $u, match: $m}]')
+        else
+          echo "Either health-url or health-checks must be set." >&2
+          exit 1
+        fi
+        count=$(jq 'length' <<<"$checks")
+        for i in $(seq 0 $((count - 1))); do
+          url=$(jq -r ".[$i].url" <<<"$checks")
+          match=$(jq -r ".[$i].match // \"OK\"" <<<"$checks")
+          echo "Polling $url for '$match' (timeout ${HEALTH_TIMEOUT_SECONDS}s)..."
+          # -fs (not -fsS): stay quiet during startup. Per-attempt errors are
+          # noise — `timeout` non-zero plus the container logs in the next
+          # step tell you what actually failed if the container never comes up.
+          timeout "$HEALTH_TIMEOUT_SECONDS" bash -c \
+            'until curl -fs "$1" | grep -q "$2"; do sleep 1; done' _ "$url" "$match"
+        done
 
     - name: Container logs
       if: always()

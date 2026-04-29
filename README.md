@@ -123,7 +123,23 @@ For anything else `docker run` accepts (`--network`, `-v`, extra `-e`, etc.) use
       -e CHROMEFLEET_URL=http://localhost:8300
 ```
 
-The health-check step polls with `curl -fsS "$health-url" | grep -q "$health-match"` once per second until success or `health-timeout-seconds` is hit. The container is `docker rm -f`'d on every outcome (success, health-check failure, build failure).
+For multiple endpoints on the same container, use `health-checks` (one JSON object per line). Checks run sequentially, each gets the full `health-timeout-seconds` budget. **Don't** add a follow-up `curl` step in the calling workflow — the container is removed in this action's `always()` step, so external polling after it returns will fail:
+
+```yaml
+- uses: remotebrowser/shared-github-actions/container-health-check@v1
+  with:
+    image-name: getgather
+    health-checks: |
+      {"url": "http://localhost:23456/health"}
+      {"url": "http://localhost:23456/extended-health"}
+    extra-config: |
+      --network host
+      -e CHROMEFLEET_URL=http://localhost:8300
+```
+
+`match` defaults to `OK` per check; pass `{"url": "...", "match": "ready"}` to override. `health-checks` wins over `health-url` when both are set.
+
+Each poll uses `curl -fs "$url" | grep -q "$match"` once per second until success or `health-timeout-seconds` is hit. The container is `docker rm -f`'d on every outcome (success, health-check failure, build failure).
 
 See `container-health-check/action.yml` for the full input list.
 
