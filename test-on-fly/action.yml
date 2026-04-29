@@ -113,7 +113,10 @@ runs:
           --app "$TEST_ON_FLY_APP" \
           --config "${{ inputs.fly-toml }}" \
           --dockerfile "${{ inputs.dockerfile }}" \
-          --strategy immediate
+          --strategy immediate \
+          --local-only \
+          --ha=false \
+          --flycast
 
     - name: Wait for result marker
       shell: bash

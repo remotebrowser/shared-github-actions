@@ -101,4 +101,5 @@ runs:
           --app "${{ inputs.app-name }}" \
           --config "${{ inputs.fly-toml }}" \
           --dockerfile "${{ inputs.dockerfile }}" \
-          --strategy bluegreen
+          --strategy bluegreen \
+          --local-only
