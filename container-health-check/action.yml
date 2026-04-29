@@ -48,6 +48,18 @@ inputs:
     description: Doppler config / environment name.
     required: false
     default: github
+  extra-config:
+    description: >
+      Raw `docker run` flags appended verbatim to the command. One flag (or
+      flag + value) per line. Blank lines and `#` comment lines are ignored;
+      each remaining line is shell-split, so quoted values like
+      `-e MSG="hello world"` work. Caller writes flags explicitly, e.g.
+      `--network host`, `-e KEY=VALUE`, `-v /tmp/x:/x`. Any `-e KEY=...`
+      here is appended after Doppler-derived `-e` flags, so it overrides
+      the same key from Doppler. Workflow YAML is trusted, so values are
+      `eval`-expanded — do not pass untrusted input.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -86,6 +98,7 @@ runs:
         DOPPLER_TOKEN: ${{ inputs.doppler-token }}
         DOPPLER_PROJECT: ${{ inputs.doppler-project }}
         DOPPLER_CONFIG: ${{ inputs.doppler-config }}
+        EXTRA_CONFIG: ${{ inputs.extra-config }}
       run: |
         set -euo pipefail
         env_args=()
@@ -100,7 +113,16 @@ runs:
         fi
         port_args=()
         [ -n "$PORT_MAPPING" ] && port_args=(-p "$PORT_MAPPING")
-        docker run -d --name "$CONTAINER" "${port_args[@]}" "${env_args[@]}" "$IMAGE"
+        extra_args=()
+        if [ -n "$EXTRA_CONFIG" ]; then
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            # eval to honor quoted values like `-e MSG="hello world"`.
+            eval "extra_args+=($line)"
+          done <<<"$EXTRA_CONFIG"
+        fi
+        docker run -d --name "$CONTAINER" "${port_args[@]}" "${env_args[@]}" "${extra_args[@]}" "$IMAGE"
 
     - name: Wait for health check
       shell: bash

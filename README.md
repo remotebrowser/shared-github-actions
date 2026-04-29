@@ -109,7 +109,19 @@ jobs:
           health-match: OK
 ```
 
-When `doppler-token` is set, **every** Doppler key is forwarded to the container as `-e KEY` (value inherited from the step shell). Prune the Doppler config itself if any key shouldn't reach the container. Without `doppler-token`, the container runs with no extra env — pass plain `docker run` env via your own preceding step if needed.
+When `doppler-token` is set, **every** Doppler key is forwarded to the container as `-e KEY` (value inherited from the step shell). Prune the Doppler config itself if any key shouldn't reach the container. Without `doppler-token`, the container runs with no extra env — use `extra-config` (below) to pass `-e KEY=VALUE` flags directly.
+
+For anything else `docker run` accepts (`--network`, `-v`, extra `-e`, etc.) use the `extra-config` input. One flag per line, shell-split so quoted values work. Applied after the Doppler-derived `-e` flags, so an `-e KEY=...` here overrides the same key from Doppler:
+
+```yaml
+- uses: remotebrowser/shared-github-actions/container-health-check@v1
+  with:
+    image-name: getgather
+    health-url: http://localhost:23456/health
+    extra-config: |
+      --network host
+      -e CHROMEFLEET_URL=http://localhost:8300
+```
 
 The health-check step polls with `curl -fsS "$health-url" | grep -q "$health-match"` once per second until success or `health-timeout-seconds` is hit. The container is `docker rm -f`'d on every outcome (success, health-check failure, build failure).
 
