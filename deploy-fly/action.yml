@@ -6,8 +6,13 @@ description: >
 
 inputs:
   fly-api-token:
-    description: Fly API token.
-    required: true
+    description: >
+      Fly API token. Optional when doppler-token is set AND Doppler holds a
+      FLY_API_TOKEN secret — in that case the value is pulled from Doppler.
+      Required otherwise. When both are provided, the input wins and a
+      ::warning:: is emitted if the values differ.
+    required: false
+    default: ""
   app-name:
     description: Target Fly app name.
     required: true
@@ -68,47 +73,42 @@ runs:
       shell: bash
       env:
         DOPPLER_TOKEN: ${{ inputs.doppler-token }}
-        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
+        DOPPLER_PROJECT: ${{ inputs.doppler-project }}
+        DOPPLER_CONFIG: ${{ inputs.doppler-config }}
+        FLY_API_TOKEN_INPUT: ${{ inputs.fly-api-token }}
         EXTRA_SECRETS: ${{ inputs.extra-secrets }}
+        APP_NAME: ${{ inputs.app-name }}
       run: |
         set -euo pipefail
-
-        # Build SECRETS in memory: Doppler first, then GIT_REV, then extra-secrets
-        # last so later lines override earlier ones in flyctl secrets import.
-        SECRETS=""
-        if [ -n "$DOPPLER_TOKEN" ]; then
-          SECRETS=$(doppler-export "${{ inputs.doppler-project }}" "${{ inputs.doppler-config }}")
-          if ! grep -qE '^[A-Za-z_][A-Za-z0-9_]*=' <<<"$SECRETS"; then
-            echo "refusing to proceed: Doppler returned 0 keys"
-            exit 1
-          fi
-        fi
-        SECRETS=$(printf '%s\nGIT_REV="%s"\n%s\n' "$SECRETS" "$GITHUB_SHA" "$EXTRA_SECRETS")
+        # Resolves FLY_API_TOKEN (input vs Doppler) and exports SECRETS.
+        . "$GITHUB_ACTION_PATH/../_lib/load-secrets.sh"
 
         keys=$(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' <<<"$SECRETS" | sort -u)
 
         # Stale cleanup only runs when Doppler is the source of truth — without it
         # we have no full picture of "wanted" and could wipe manually-set secrets.
         if [ -n "$DOPPLER_TOKEN" ]; then
-          current=$(flyctl secrets list --app "${{ inputs.app-name }}" --json | jq -r '.[].Name' | sort -u)
+          current=$(flyctl secrets list --app "$APP_NAME" --json | jq -r '.[].Name' | sort -u)
           stale=$(comm -23 <(printf '%s\n' "$current") <(printf '%s\n' "$keys"))
           if [ -n "$stale" ]; then
             echo "Unsetting stale secrets:"
             printf '  %s\n' $stale
             # shellcheck disable=SC2086
-            flyctl secrets unset --stage --app "${{ inputs.app-name }}" $stale
+            flyctl secrets unset --stage --app "$APP_NAME" $stale
           else
             echo "No stale secrets to unset."
           fi
         fi
 
-        flyctl secrets import --app "${{ inputs.app-name }}" --stage <<<"$SECRETS"
+        flyctl secrets import --app "$APP_NAME" --stage <<<"$SECRETS"
 
     - name: Deploy
       shell: bash
-      env:
-        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
       run: |
+        if [ -z "${FLY_API_TOKEN:-}" ]; then
+          echo "FLY_API_TOKEN missing — earlier resolution step must have failed." >&2
+          exit 1
+        fi
         flyctl deploy \
           --app "${{ inputs.app-name }}" \
           --config "${{ inputs.fly-toml }}" \

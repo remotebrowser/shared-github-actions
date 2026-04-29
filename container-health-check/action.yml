@@ -1,0 +1,127 @@
+name: Container health check
+description: >
+  Build a Docker image, run it as a detached container, poll an HTTP health
+  endpoint until a substring appears, dump container logs, and remove the
+  container. Optionally loads env vars from Doppler and forwards every key
+  into the container. Secrets stay in memory only — no --env-file on disk
+  and no $GITHUB_ENV write across steps.
+
+inputs:
+  image-name:
+    description: Docker image tag to build, e.g. `flyfleet`.
+    required: true
+  container-name:
+    description: --name for `docker run`. Defaults to image-name.
+    required: false
+    default: ""
+  dockerfile:
+    description: Path passed to `docker build -f`.
+    required: false
+    default: Dockerfile
+  context:
+    description: Build context directory.
+    required: false
+    default: "."
+  port-mapping:
+    description: -p arg for `docker run`, e.g. `8300:8300`. Skipped when empty.
+    required: false
+    default: ""
+  health-url:
+    description: URL polled with `curl -fsS` until `health-match` appears in the body.
+    required: true
+  health-match:
+    description: Substring required in the curl response body.
+    required: false
+    default: OK
+  health-timeout-seconds:
+    description: Hard timeout for the health-check loop.
+    required: false
+    default: "180"
+  doppler-token:
+    description: Doppler API token. If empty, no Doppler load happens.
+    required: false
+    default: ""
+  doppler-project:
+    description: Doppler project name. Required when doppler-token is set.
+    required: false
+  doppler-config:
+    description: Doppler config / environment name.
+    required: false
+    default: github
+
+runs:
+  using: composite
+  steps:
+    - name: Validate Doppler inputs
+      if: inputs.doppler-token != ''
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.doppler-project }}" ]; then
+          echo "doppler-token is set but doppler-project is missing." >&2
+          exit 1
+        fi
+
+    - name: Install doppler-export
+      if: inputs.doppler-token != ''
+      shell: bash
+      run: |
+        mkdir -p "$HOME/.local/bin"
+        install -m 0755 "$GITHUB_ACTION_PATH/../setup-doppler/doppler-export" "$HOME/.local/bin/doppler-export"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Build image
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image-name }}
+        DOCKERFILE: ${{ inputs.dockerfile }}
+        CONTEXT: ${{ inputs.context }}
+      run: docker build -t "$IMAGE" -f "$DOCKERFILE" "$CONTEXT"
+
+    - name: Run container
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image-name }}
+        CONTAINER: ${{ inputs.container-name != '' && inputs.container-name || inputs.image-name }}
+        PORT_MAPPING: ${{ inputs.port-mapping }}
+        DOPPLER_TOKEN: ${{ inputs.doppler-token }}
+        DOPPLER_PROJECT: ${{ inputs.doppler-project }}
+        DOPPLER_CONFIG: ${{ inputs.doppler-config }}
+      run: |
+        set -euo pipefail
+        env_args=()
+        if [ -n "$DOPPLER_TOKEN" ]; then
+          # Single Doppler call. shell format is `export KEY='VALUE'` per line.
+          shell_out=$(doppler-export "$DOPPLER_PROJECT" "$DOPPLER_CONFIG" --format=shell)
+          # Source into THIS shell only; values never touch disk and never enter $GITHUB_ENV.
+          eval "$shell_out"
+          while IFS= read -r k; do
+            [ -n "$k" ] && env_args+=(-e "$k")
+          done < <(sed -n "s/^export \([A-Za-z_][A-Za-z0-9_]*\)='.*'$/\1/p" <<<"$shell_out")
+        fi
+        port_args=()
+        [ -n "$PORT_MAPPING" ] && port_args=(-p "$PORT_MAPPING")
+        docker run -d --name "$CONTAINER" "${port_args[@]}" "${env_args[@]}" "$IMAGE"
+
+    - name: Wait for health check
+      shell: bash
+      env:
+        HEALTH_URL: ${{ inputs.health-url }}
+        HEALTH_MATCH: ${{ inputs.health-match }}
+        HEALTH_TIMEOUT_SECONDS: ${{ inputs.health-timeout-seconds }}
+      run: |
+        timeout "$HEALTH_TIMEOUT_SECONDS" bash -c \
+          'until curl -fsS "$1" | grep -q "$2"; do sleep 1; done' _ "$HEALTH_URL" "$HEALTH_MATCH"
+
+    - name: Container logs
+      if: always()
+      shell: bash
+      env:
+        CONTAINER: ${{ inputs.container-name != '' && inputs.container-name || inputs.image-name }}
+      run: docker logs --details "$CONTAINER" || true
+
+    - name: Remove container
+      if: always()
+      shell: bash
+      env:
+        CONTAINER: ${{ inputs.container-name != '' && inputs.container-name || inputs.image-name }}
+      run: docker rm -f "$CONTAINER" || true

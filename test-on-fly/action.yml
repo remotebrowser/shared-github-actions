@@ -6,8 +6,13 @@ description: >
 
 inputs:
   fly-api-token:
-    description: Fly API token.
-    required: true
+    description: >
+      Fly API token. Optional when doppler-token is set AND Doppler holds a
+      FLY_API_TOKEN secret — in that case the value is pulled from Doppler.
+      Required otherwise. When both are provided, the input wins and a
+      ::warning:: is emitted if the values differ.
+    required: false
+    default: ""
   app-name-prefix:
     description: Prefix for the generated Fly app name. A random hex suffix is appended.
     required: true
@@ -96,41 +101,29 @@ runs:
     - name: Setup flyctl
       uses: superfly/flyctl-actions/setup-flyctl@master
 
-    - name: Create test app
-      shell: bash
-      env:
-        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
-      run: flyctl apps create "$TEST_ON_FLY_APP"
-
-    - name: Stage secrets
+    - name: Create test app and stage secrets
       shell: bash
       env:
         DOPPLER_TOKEN: ${{ inputs.doppler-token }}
-        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
+        DOPPLER_PROJECT: ${{ inputs.doppler-project }}
+        DOPPLER_CONFIG: ${{ inputs.doppler-config }}
+        FLY_API_TOKEN_INPUT: ${{ inputs.fly-api-token }}
         EXTRA_SECRETS: ${{ inputs.extra-secrets }}
       run: |
         set -euo pipefail
-
-        # Build SECRETS in memory: Doppler first, then GIT_REV, then extra-secrets
-        # last so later lines override earlier ones in flyctl secrets import.
-        # No stale-cleanup pass — the test app is freshly created above.
-        SECRETS=""
-        if [ -n "$DOPPLER_TOKEN" ]; then
-          SECRETS=$(doppler-export "${{ inputs.doppler-project }}" "${{ inputs.doppler-config }}")
-          if ! grep -qE '^[A-Za-z_][A-Za-z0-9_]*=' <<<"$SECRETS"; then
-            echo "refusing to proceed: Doppler returned 0 keys"
-            exit 1
-          fi
-        fi
-        SECRETS=$(printf '%s\nGIT_REV="%s"\n%s\n' "$SECRETS" "$GITHUB_SHA" "$EXTRA_SECRETS")
-
+        # Resolves FLY_API_TOKEN (input vs Doppler) and exports SECRETS via a
+        # single doppler-export call. No stale-cleanup pass — app is fresh.
+        . "$GITHUB_ACTION_PATH/../_lib/load-secrets.sh"
+        flyctl apps create "$TEST_ON_FLY_APP"
         flyctl secrets import --app "$TEST_ON_FLY_APP" --stage <<<"$SECRETS"
 
     - name: Deploy test app
       shell: bash
-      env:
-        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
       run: |
+        if [ -z "${FLY_API_TOKEN:-}" ]; then
+          echo "FLY_API_TOKEN missing — earlier resolution step must have failed." >&2
+          exit 1
+        fi
         flyctl deploy \
           --app "$TEST_ON_FLY_APP" \
           --config "${{ inputs.fly-toml }}" \
@@ -142,9 +135,11 @@ runs:
 
     - name: Wait for result marker
       shell: bash
-      env:
-        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
       run: |
+        if [ -z "${FLY_API_TOKEN:-}" ]; then
+          echo "FLY_API_TOKEN missing — earlier resolution step must have failed." >&2
+          exit 1
+        fi
         elapsed=0
         timeout=${{ inputs.timeout-seconds }}
         until flyctl ssh console -C "test -f ${{ inputs.result-file }}" \
@@ -159,15 +154,20 @@ runs:
 
     - name: Stream output log
       shell: bash
-      env:
-        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
-      run: flyctl ssh console -C "sh -c 'cat ${{ inputs.output-log }}'" -a "$TEST_ON_FLY_APP"
+      run: |
+        if [ -z "${FLY_API_TOKEN:-}" ]; then
+          echo "FLY_API_TOKEN missing — earlier resolution step must have failed." >&2
+          exit 1
+        fi
+        flyctl ssh console -C "sh -c 'cat ${{ inputs.output-log }}'" -a "$TEST_ON_FLY_APP"
 
     - name: Check result
       shell: bash
-      env:
-        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
       run: |
+        if [ -z "${FLY_API_TOKEN:-}" ]; then
+          echo "FLY_API_TOKEN missing — earlier resolution step must have failed." >&2
+          exit 1
+        fi
         result=$(flyctl ssh console -C "sh -c 'cat ${{ inputs.result-file }}'" -a "$TEST_ON_FLY_APP")
         if [ "$result" != "${{ inputs.result-success-value }}" ]; then
           echo "test failed: got '$result', expected '${{ inputs.result-success-value }}'"
@@ -178,9 +178,11 @@ runs:
     - name: Pull logs back
       if: always() && env.TEST_ON_FLY_APP != ''
       shell: bash
-      env:
-        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
       run: |
+        if [ -z "${FLY_API_TOKEN:-}" ]; then
+          echo "FLY_API_TOKEN missing — skipping log pull." >&2
+          exit 0
+        fi
         flyctl ssh sftp get -R "${{ inputs.logs-dir }}" ./logs -a "$TEST_ON_FLY_APP" || true
 
     - name: Upload logs artifact
@@ -193,6 +195,9 @@ runs:
     - name: Destroy app
       if: always() && env.TEST_ON_FLY_APP != ''
       shell: bash
-      env:
-        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
-      run: flyctl apps destroy "$TEST_ON_FLY_APP" --yes || true
+      run: |
+        if [ -z "${FLY_API_TOKEN:-}" ]; then
+          echo "FLY_API_TOKEN missing — skipping app destroy. Manual cleanup of $TEST_ON_FLY_APP may be required." >&2
+          exit 0
+        fi
+        flyctl apps destroy "$TEST_ON_FLY_APP" --yes || true

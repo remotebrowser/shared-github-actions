@@ -48,12 +48,15 @@ Deploy a Fly app. Builds a single dotenv stream of secrets and imports it with o
     doppler-token: ${{ secrets.DOPPLER_TOKEN }}
     doppler-project: flyfleet
     doppler-config: github
-    fly-api-token: ${{ secrets.FLY_API_TOKEN }}
+    # fly-api-token is optional when Doppler holds a FLY_API_TOKEN secret.
+    # Pass it explicitly to override the Doppler value.
     app-name: flyfleet
     extra-secrets: |   # optional
       FEATURE_FLAG_X=enabled
       DEPLOY_ENV=${{ github.ref_name }}
 ```
+
+`fly-api-token` resolution order: explicit input wins, otherwise pulled from Doppler under the key `FLY_API_TOKEN`. If both are set and disagree, the input is used and a `::warning::` is logged. If neither is available, the action fails before any `flyctl` call.
 
 `extra-secrets` values are not auto-masked in workflow logs — pass them via `${{ secrets.* }}` if they're sensitive. Stale-secret cleanup runs only when `doppler-token` is set, and operates against the full union of Doppler keys + `GIT_REV` + `extra-secrets` keys, so none of these are ever flagged as stale.
 
@@ -69,7 +72,7 @@ Deploy a throwaway Fly app, wait for a result marker file written by the contain
     doppler-token: ${{ secrets.DOPPLER_TOKEN }}
     doppler-project: flyfleet
     doppler-config: github
-    fly-api-token: ${{ secrets.FLY_API_TOKEN }}
+    # fly-api-token optional — same resolution rules as deploy-fly.
     app-name-prefix: test-flyfleet-direct
     fly-toml: fly.test.toml
     dockerfile: Dockerfile.test
@@ -81,6 +84,36 @@ Deploy a throwaway Fly app, wait for a result marker file written by the contain
 A random hex suffix is appended to `app-name-prefix` to keep concurrent runs isolated. The deployed test container can read its commit SHA from the `GIT_REV` env var.
 
 See `test-on-fly/action.yml` for the full input list.
+
+### `container-health-check`
+
+Build a Docker image, run it as a detached container, poll an HTTP endpoint until it returns the expected substring, dump the container logs, and remove the container. Optionally loads every key from a Doppler config and forwards them into the container — secrets stay in memory only (no `--env-file` on disk, no `$GITHUB_ENV` write).
+
+Replaces the typical `docker build / docker run -e VAR1 -e VAR2 / curl loop / docker logs / docker rm` recipe with a single composite step.
+
+```yaml
+jobs:
+  container:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: remotebrowser/shared-github-actions/container-health-check@v1
+        with:
+          doppler-token: ${{ secrets.DOPPLER_TOKEN }}
+          doppler-project: flyfleet
+          doppler-config: github
+          image-name: flyfleet
+          port-mapping: 8300:8300
+          health-url: http://localhost:8300/health
+          health-match: OK
+```
+
+When `doppler-token` is set, **every** Doppler key is forwarded to the container as `-e KEY` (value inherited from the step shell). Prune the Doppler config itself if any key shouldn't reach the container. Without `doppler-token`, the container runs with no extra env — pass plain `docker run` env via your own preceding step if needed.
+
+The health-check step polls with `curl -fsS "$health-url" | grep -q "$health-match"` once per second until success or `health-timeout-seconds` is hit. The container is `docker rm -f`'d on every outcome (success, health-check failure, build failure).
+
+See `container-health-check/action.yml` for the full input list.
 
 ### `prepare-matrix`
 
