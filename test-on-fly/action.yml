@@ -1,0 +1,173 @@
+name: Run tests on a throwaway Fly app
+description: >
+  Deploy a throwaway Fly app whose container runs tests on boot and writes a
+  result marker file. Wait for the marker, read pass/fail, pull logs back as
+  an artifact, and destroy the app (always).
+
+inputs:
+  fly-api-token:
+    description: Fly API token.
+    required: true
+  app-name-prefix:
+    description: Prefix for the generated Fly app name. A random hex suffix is appended.
+    required: true
+  fly-toml:
+    description: Path to fly.toml for the test app.
+    required: false
+    default: fly.test.toml
+  dockerfile:
+    description: Path to Dockerfile for the test app.
+    required: false
+    default: Dockerfile.test
+  doppler-token:
+    description: Doppler API token. If empty, secret sync is skipped entirely.
+    required: false
+    default: ""
+  doppler-project:
+    description: Doppler project name. Required when doppler-token is set.
+    required: false
+  doppler-config:
+    description: Doppler config / environment name. Required when doppler-token is set.
+    required: false
+  result-file:
+    description: Path inside the container to poll for a result marker.
+    required: false
+    default: /app/logs/pytest_result.log
+  result-success-value:
+    description: Expected content of result-file for the test to pass.
+    required: false
+    default: success
+  output-log:
+    description: Path inside the container to stream to the workflow log.
+    required: false
+    default: /app/logs/pytest_output.log
+  logs-dir:
+    description: Directory inside the container to pull back via sftp.
+    required: false
+    default: /app/logs
+  artifact-name:
+    description: Name for the uploaded logs artifact.
+    required: false
+    default: test-logs
+  timeout-seconds:
+    description: Max wait for result-file to appear.
+    required: false
+    default: "600"
+
+runs:
+  using: composite
+  steps:
+    - name: Validate Doppler inputs
+      if: inputs.doppler-token != ''
+      shell: bash
+      run: |
+        missing=()
+        [ -z "${{ inputs.doppler-project }}" ] && missing+=(doppler-project)
+        [ -z "${{ inputs.doppler-config }}" ]  && missing+=(doppler-config)
+        if [ ${#missing[@]} -gt 0 ]; then
+          echo "doppler-token is set but required inputs are missing: ${missing[*]}"
+          exit 1
+        fi
+
+    - name: Generate test app name
+      shell: bash
+      run: |
+        suffix=$(openssl rand -hex 3)
+        app="${{ inputs.app-name-prefix }}-${suffix}"
+        echo "TEST_ON_FLY_APP=$app" >> "$GITHUB_ENV"
+        echo "Generated app name: $app"
+
+    - name: Install doppler-export
+      if: inputs.doppler-token != ''
+      shell: bash
+      run: |
+        mkdir -p "$HOME/.local/bin"
+        install -m 0755 "$GITHUB_ACTION_PATH/../setup-doppler/doppler-export" "$HOME/.local/bin/doppler-export"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Setup flyctl
+      uses: superfly/flyctl-actions/setup-flyctl@master
+
+    - name: Create test app
+      shell: bash
+      env:
+        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
+      run: flyctl apps create "$TEST_ON_FLY_APP"
+
+    - name: Import secrets
+      if: inputs.doppler-token != ''
+      shell: bash
+      env:
+        DOPPLER_TOKEN: ${{ inputs.doppler-token }}
+        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
+      run: |
+        doppler-export "${{ inputs.doppler-project }}" "${{ inputs.doppler-config }}" \
+          | flyctl secrets import --app "$TEST_ON_FLY_APP" --stage
+
+    - name: Deploy test app
+      shell: bash
+      env:
+        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
+      run: |
+        flyctl deploy \
+          --app "$TEST_ON_FLY_APP" \
+          --config "${{ inputs.fly-toml }}" \
+          --dockerfile "${{ inputs.dockerfile }}" \
+          --strategy immediate
+
+    - name: Wait for result marker
+      shell: bash
+      env:
+        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
+      run: |
+        elapsed=0
+        timeout=${{ inputs.timeout-seconds }}
+        until flyctl ssh console -C "test -f ${{ inputs.result-file }}" \
+          -a "$TEST_ON_FLY_APP" >/dev/null 2>&1; do
+          if [ $elapsed -ge $timeout ]; then
+            echo "timeout waiting for ${{ inputs.result-file }} after ${timeout}s"
+            exit 1
+          fi
+          sleep 10
+          elapsed=$((elapsed + 10))
+        done
+
+    - name: Stream output log
+      shell: bash
+      env:
+        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
+      run: flyctl ssh console -C "sh -c 'cat ${{ inputs.output-log }}'" -a "$TEST_ON_FLY_APP"
+
+    - name: Check result
+      shell: bash
+      env:
+        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
+      run: |
+        result=$(flyctl ssh console -C "sh -c 'cat ${{ inputs.result-file }}'" -a "$TEST_ON_FLY_APP")
+        if [ "$result" != "${{ inputs.result-success-value }}" ]; then
+          echo "test failed: got '$result', expected '${{ inputs.result-success-value }}'"
+          exit 1
+        fi
+        echo "test passed"
+
+    - name: Pull logs back
+      if: always() && env.TEST_ON_FLY_APP != ''
+      shell: bash
+      env:
+        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
+      run: |
+        flyctl ssh sftp get -R "${{ inputs.logs-dir }}" ./logs -a "$TEST_ON_FLY_APP" || true
+
+    - name: Upload logs artifact
+      if: always() && env.TEST_ON_FLY_APP != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: logs/**/*
+
+    - name: Destroy app
+      if: always() && env.TEST_ON_FLY_APP != ''
+      shell: bash
+      env:
+        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
+      run: flyctl apps destroy "$TEST_ON_FLY_APP" --yes || true

@@ -1,0 +1,55 @@
+name: Try setup-doppler
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: Doppler project name
+        required: true
+      config:
+        description: Doppler config name
+        required: false
+        default: github
+      format:
+        description: Output format
+        required: false
+        default: dotenv
+        type: choice
+        options: [dotenv, shell, json]
+
+jobs:
+  try:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./setup-doppler
+
+      - name: List keys (values are masked by GitHub)
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+        run: |
+          case "${{ inputs.format }}" in
+            json)   doppler-export "${{ inputs.project }}" "${{ inputs.config }}" --format=json | jq -r 'keys[]' ;;
+            shell)  doppler-export "${{ inputs.project }}" "${{ inputs.config }}" --format=shell | sed -n 's/^export \([^=]*\)=.*/\1/p' ;;
+            *)      doppler-export "${{ inputs.project }}" "${{ inputs.config }}" | sed -n 's/^\([^=]*\)=.*/\1/p' ;;
+          esac
+
+      - name: Pipe into a consumer (docker --env-file example)
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+        run: |
+          # Use process substitution; env goes to the one command and dies with it.
+          # Replace with your real consumer (flyctl secrets import, docker run, etc.)
+          docker run --rm --env-file <(doppler-export "${{ inputs.project }}" "${{ inputs.config }}") \
+            alpine sh -c 'echo "container saw $(env | wc -l) env vars total"'
+
+      - name: Verify secrets are scoped (sentinel should be empty here)
+        run: |
+          # No DOPPLER_TOKEN in env here; no Doppler values either.
+          # If you expected a key to be absent outside the sourcing step, check it here.
+          if [ -n "${DOPPLER_TOKEN:-}" ]; then
+            echo "unexpected: DOPPLER_TOKEN present in step that did not import it"
+            exit 1
+          fi
+          echo "ok: no DOPPLER_TOKEN in this step's env"

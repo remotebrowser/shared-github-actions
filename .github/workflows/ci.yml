@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck setup-doppler/doppler-export
+
+  actionlint:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install actionlint
+        run: |
+          bash <(curl -sS https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          echo "$PWD" >> "$GITHUB_PATH"
+      - run: actionlint
+
+  # TODO: end-to-end smoke tests against a dedicated Doppler ci-test project
+  # and a throwaway Fly test app, gated on repo secrets DOPPLER_TOKEN_CI_TEST
+  # and FLY_API_TOKEN_CI_TEST. Enable once those are provisioned.

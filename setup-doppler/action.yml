@@ -1,0 +1,15 @@
+name: Install doppler-export on PATH
+description: >
+  Installs the doppler-export script on $PATH. Callers then pipe
+  `doppler-export <project> [config]` into flyctl, docker, or any other
+  consumer. Requires DOPPLER_TOKEN in the step env when doppler-export runs.
+
+runs:
+  using: composite
+  steps:
+    - name: Install doppler-export
+      shell: bash
+      run: |
+        mkdir -p "$HOME/.local/bin"
+        install -m 0755 "$GITHUB_ACTION_PATH/doppler-export" "$HOME/.local/bin/doppler-export"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"

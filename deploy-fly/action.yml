@@ -1,0 +1,104 @@
+name: Deploy to Fly
+description: >
+  Deploy an app to Fly.io. If a Doppler token is provided, also syncs secrets
+  from Doppler into the Fly app (importing current keys and unsetting stale
+  ones) before deploying.
+
+inputs:
+  fly-api-token:
+    description: Fly API token.
+    required: true
+  app-name:
+    description: Target Fly app name.
+    required: true
+  fly-toml:
+    description: Path to fly.toml.
+    required: false
+    default: fly.toml
+  dockerfile:
+    description: Path to Dockerfile.
+    required: false
+    default: Dockerfile
+  doppler-token:
+    description: Doppler API token. If empty, secret sync is skipped entirely.
+    required: false
+    default: ""
+  doppler-project:
+    description: Doppler project name. Required when doppler-token is set.
+    required: false
+  doppler-config:
+    description: Doppler config / environment name. Required when doppler-token is set.
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Validate Doppler inputs
+      if: inputs.doppler-token != ''
+      shell: bash
+      run: |
+        missing=()
+        [ -z "${{ inputs.doppler-project }}" ] && missing+=(doppler-project)
+        [ -z "${{ inputs.doppler-config }}" ]  && missing+=(doppler-config)
+        if [ ${#missing[@]} -gt 0 ]; then
+          echo "doppler-token is set but required inputs are missing: ${missing[*]}"
+          exit 1
+        fi
+
+    - name: Install doppler-export
+      if: inputs.doppler-token != ''
+      shell: bash
+      run: |
+        mkdir -p "$HOME/.local/bin"
+        install -m 0755 "$GITHUB_ACTION_PATH/../setup-doppler/doppler-export" "$HOME/.local/bin/doppler-export"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+    - name: Setup flyctl
+      uses: superfly/flyctl-actions/setup-flyctl@master
+
+    - name: Unset stale secrets
+      if: inputs.doppler-token != ''
+      shell: bash
+      env:
+        DOPPLER_TOKEN: ${{ inputs.doppler-token }}
+        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
+      run: |
+        wanted=$(
+          doppler-export "${{ inputs.doppler-project }}" "${{ inputs.doppler-config }}" --format=json 2>/dev/null \
+            | jq -r 'keys[]' | sort -u
+        )
+        if [ -z "$wanted" ]; then
+          echo "refusing to compute stale diff: Doppler returned 0 keys"
+          exit 1
+        fi
+        current=$(flyctl secrets list --app "${{ inputs.app-name }}" --json | jq -r '.[].Name' | sort -u)
+        stale=$(comm -23 <(printf '%s\n' "$current") <(printf '%s\n' "$wanted"))
+        if [ -n "$stale" ]; then
+          echo "Unsetting stale secrets:"
+          printf '  %s\n' $stale
+          # shellcheck disable=SC2086
+          flyctl secrets unset --stage --app "${{ inputs.app-name }}" $stale
+        else
+          echo "No stale secrets to unset."
+        fi
+
+    - name: Import secrets
+      if: inputs.doppler-token != ''
+      shell: bash
+      env:
+        DOPPLER_TOKEN: ${{ inputs.doppler-token }}
+        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
+      run: |
+        doppler-export "${{ inputs.doppler-project }}" "${{ inputs.doppler-config }}" \
+          | flyctl secrets import --app "${{ inputs.app-name }}" --stage
+
+    - name: Deploy
+      shell: bash
+      env:
+        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
+      run: |
+        flyctl deploy \
+          --app "${{ inputs.app-name }}" \
+          --config "${{ inputs.fly-toml }}" \
+          --dockerfile "${{ inputs.dockerfile }}" \
+          --strategy bluegreen

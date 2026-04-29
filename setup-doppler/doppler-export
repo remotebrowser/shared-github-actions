@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Fetch Doppler secrets and emit them on stdout in a pipeable format.
+#
+#   doppler-export <project> [config] [--format=dotenv|shell|json]
+#
+# On stderr: lists every downloaded key (one per line) and emits ::add-mask::
+# directives for values whose key name matches (case-insensitive) any of:
+# KEY, TOKEN, PASSWORD, PASSWD, PWD. Non-matching keys (e.g. LOG_LEVEL) are
+# left unmasked so they stay visible in workflow logs.
+#
+# Requires: DOPPLER_TOKEN in env. Never redirect stderr — that suppresses ::add-mask::.
+
+set -euo pipefail
+
+format=dotenv
+args=()
+for a in "$@"; do
+  case "$a" in
+  --format=*) format="${a#--format=}" ;;
+  --format)
+    echo "doppler-export: --format requires =VALUE" >&2
+    exit 2
+    ;;
+  *) args+=("$a") ;;
+  esac
+done
+set -- "${args[@]}"
+
+project="${1:-}"
+config="${2:-github}"
+
+if [ -z "$project" ]; then
+  echo "doppler-export: missing <project>" >&2
+  echo "usage: doppler-export <project> [config] [--format=dotenv|shell|json]" >&2
+  exit 2
+fi
+if [ -z "${DOPPLER_TOKEN:-}" ]; then
+  echo "doppler-export: DOPPLER_TOKEN env var is required" >&2
+  exit 2
+fi
+
+case "$format" in
+dotenv | shell | json) ;;
+*)
+  echo "doppler-export: unknown --format=$format" >&2
+  exit 2
+  ;;
+esac
+
+# Refuse pull_request_target unless caller opts in — fork PRs could otherwise
+# exfiltrate any secret this action loads.
+if [ "${GITHUB_EVENT_NAME:-}" = "pull_request_target" ] && [ "${ALLOW_PULL_REQUEST_TARGET:-}" != "1" ]; then
+  echo "doppler-export: refusing to run under pull_request_target (set ALLOW_PULL_REQUEST_TARGET=1 to override)" >&2
+  exit 2
+fi
+
+json=$(curl -sS --fail-with-body \
+  -H "authorization: Bearer $DOPPLER_TOKEN" \
+  "https://api.doppler.com/v3/configs/config/secrets/download?project=${project}&config=${config}&format=json")
+
+# List downloaded keys, one per line, on stderr.
+jq -r 'keys[]' <<<"$json" >&2
+
+# Case-insensitive substring match identifying values that should be masked.
+# Keys without any of these substrings (e.g. LOG_LEVEL, ENVIRONMENT) stay visible.
+SENSITIVE_RE='(KEY|TOKEN|PASSWORD|PASSWD|PWD)'
+
+# Emit masking directives BEFORE values reach stdout. GitHub must see the mask
+# line before the value line in order to redact it in logs.
+jq -r 'to_entries[] | @base64' <<<"$json" | while read -r b64; do
+  entry=$(printf '%s' "$b64" | base64 -d)
+  k=$(jq -r '.key' <<<"$entry")
+  v=$(jq -r '.value' <<<"$entry")
+
+  # Mask only when the key name looks sensitive (case-insensitive).
+  if [[ "${k^^}" =~ $SENSITIVE_RE ]]; then
+    printf '::add-mask::%s\n' "$v" >&2
+    while IFS= read -r line; do
+      [ -n "$line" ] && printf '::add-mask::%s\n' "$line" >&2
+    done <<<"$v"
+
+    # GitHub silently declines to mask values shorter than 4 chars or common words.
+    if [ ${#v} -lt 4 ]; then
+      printf 'doppler-export: warning: value for %s is <4 chars and will not be masked by GitHub\n' "$k" >&2
+    fi
+  fi
+
+  case "$format" in
+  shell)
+    # single-quote escape: ' -> '\''  (safe for eval / source)
+    esc=${v//\'/\'\\\'\'}
+    printf "export %s='%s'\n" "$k" "$esc"
+    ;;
+  dotenv)
+    # Always double-quote; escape \ " $ ` for POSIX-shell-ish dotenv parsers.
+    # Newlines are preserved literally inside the quoted value (flyctl/docker
+    # handling varies — see README caveats).
+    esc=${v//\\/\\\\}
+    esc=${esc//\"/\\\"}
+    esc=${esc//\$/\\\$}
+    esc=${esc//\`/\\\`}
+    printf '%s="%s"\n' "$k" "$esc"
+    ;;
+  json)
+    # rebuilt as a single-line JSON object across all keys — emitted once after the loop
+    printf '%s\n' "$entry" # temp: one-entry-per-line, reassembled below
+    ;;
+  esac
+done | {
+  if [ "$format" = "json" ]; then
+    jq -s 'map({(.key): .value}) | add // {}' -c
+  else
+    cat
+  fi
+}
