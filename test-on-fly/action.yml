@@ -38,8 +38,8 @@ inputs:
     description: >
       Additional KEY=VALUE pairs (one per line, dotenv format) to set as Fly
       secrets on the test app. Applied after Doppler, so a key here overrides
-      the same key from Doppler. Values are not auto-masked — pass them via
-      ${{ secrets.* }} in the workflow if they're sensitive.
+      the same key from Doppler. Values are not auto-masked — reference them
+      through the workflow's secrets context if they're sensitive.
     required: false
     default: ""
   result-file:
