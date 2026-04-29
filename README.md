@@ -36,7 +36,11 @@ Installs the `doppler-export` shell script on `$PATH`. Consumers then pipe its o
 
 ### `deploy-fly`
 
-Deploy a Fly app. Fetches Doppler secrets, imports them via `flyctl secrets import`, then `flyctl deploy`.
+Deploy a Fly app. Builds a single dotenv stream of secrets and imports it with one `flyctl secrets import`, then `flyctl deploy --strategy bluegreen`. The stream is, in order:
+
+1. **Doppler** — every key from the configured Doppler project/config.
+2. **`GIT_REV`** — automatically set to `github.sha` of the calling workflow, so the running app can self-report its deployed commit.
+3. **`extra-secrets`** input (optional) — additional `KEY=VALUE` lines from the workflow. Applied last, so a key here overrides the same key from Doppler.
 
 ```yaml
 - uses: remotebrowser/shared-github-actions/deploy-fly@v1
@@ -46,7 +50,12 @@ Deploy a Fly app. Fetches Doppler secrets, imports them via `flyctl secrets impo
     doppler-config: github
     fly-api-token: ${{ secrets.FLY_API_TOKEN }}
     app-name: flyfleet
+    extra-secrets: |   # optional
+      FEATURE_FLAG_X=enabled
+      DEPLOY_ENV=${{ github.ref_name }}
 ```
+
+`extra-secrets` values are not auto-masked in workflow logs — pass them via `${{ secrets.* }}` if they're sensitive. Stale-secret cleanup runs only when `doppler-token` is set, and operates against the full union of Doppler keys + `GIT_REV` + `extra-secrets` keys, so none of these are ever flagged as stale.
 
 See `deploy-fly/action.yml` for the full input list.
 
