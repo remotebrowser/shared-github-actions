@@ -21,14 +21,13 @@ inputs:
       Newline-separated list of selected keys (one per line, blank
       lines ignored). Each key is matched against the entry value
       (string array) or the `key-field` of the entry (object array).
-      Empty list → fall back to every entry. The expected usage from
-      a workflow_dispatch caller is:
-        selections: |
-          ${{ inputs.demo && 'demo' || '' }}
-          ${{ inputs.dev  && 'dev'  || '' }}
-      so on `push`/`pull_request` events (where `${{ inputs.* }}` is
-      empty) every line collapses to blank and the action falls back
-      to the full entry list.
+      Empty list → fall back to every entry. Typical usage from a
+      workflow_dispatch caller is one line per boolean input,
+      rendered with a ternary that emits the key name when the input
+      is true and an empty string otherwise — see README for an
+      example. On push/pull_request events the dispatch inputs are
+      empty strings, so every line collapses to blank and the action
+      falls back to the full entry list.
     required: false
     default: ""
   key-field:
