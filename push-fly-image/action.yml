@@ -17,13 +17,14 @@ inputs:
     description: Target Fly app name. Becomes the registry path `registry.fly.io/<app-name>`.
     required: true
   tag:
-    description: Tag to push. Common alternatives are `${{ github.sha }}` or `ci`.
+    description: Tag to push. Common alternatives are the commit SHA or `ci`.
     required: false
     default: latest
   fly-api-token:
     description: >
-      Fly API token with push access to `app-name`. Pass via `${{ secrets.* }}`.
-      Different orgs need different tokens — supply the right one per matrix row.
+      Fly API token with push access to `app-name`. Pass via the workflow
+      secrets context. Different orgs need different tokens — supply the
+      right one per matrix row.
     required: true
 
 outputs:

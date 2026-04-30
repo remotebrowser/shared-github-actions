@@ -23,6 +23,13 @@ jobs:
           echo "$PWD" >> "$GITHUB_PATH"
       - run: actionlint
 
+  check-descriptions:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install --quiet pyyaml
+      - run: python3 .github/scripts/check-action-descriptions.py
+
   # TODO: end-to-end smoke tests against a dedicated Doppler ci-test project
   # and a throwaway Fly test app, gated on repo secrets DOPPLER_TOKEN_CI_TEST
   # and FLY_API_TOKEN_CI_TEST. Enable once those are provisioned.
