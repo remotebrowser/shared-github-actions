@@ -1,0 +1,58 @@
+name: Push image to Fly registry
+description: >
+  Tag a local Docker image and push it to registry.fly.io/<app-name>:<tag>.
+  Authenticates docker via `flyctl auth docker` using the supplied
+  fly-api-token. Single-target by design — push the same image to multiple
+  apps (including across orgs) by calling this action once per target via
+  `strategy.matrix`, with each row carrying its own fly-api-token.
+
+inputs:
+  image:
+    description: >
+      Local image ref already in the docker daemon. Tag (`my-app:latest`),
+      digest (`sha256:...`), or pulled remote ref (`ghcr.io/org/repo:tag`)
+      all work.
+    required: true
+  app-name:
+    description: Target Fly app name. Becomes the registry path `registry.fly.io/<app-name>`.
+    required: true
+  tag:
+    description: Tag to push. Common alternatives are `${{ github.sha }}` or `ci`.
+    required: false
+    default: latest
+  fly-api-token:
+    description: >
+      Fly API token with push access to `app-name`. Pass via `${{ secrets.* }}`.
+      Different orgs need different tokens — supply the right one per matrix row.
+    required: true
+
+outputs:
+  image-uri:
+    description: Fully qualified pushed URI, `registry.fly.io/<app-name>:<tag>`.
+    value: ${{ steps.push.outputs.image-uri }}
+
+runs:
+  using: composite
+  steps:
+    - name: Setup flyctl
+      uses: superfly/flyctl-actions/setup-flyctl@master
+
+    - name: Authenticate docker to Fly registry
+      shell: bash
+      env:
+        FLY_API_TOKEN: ${{ inputs.fly-api-token }}
+      run: flyctl auth docker
+
+    - id: push
+      name: Tag and push
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        APP_NAME: ${{ inputs.app-name }}
+        TAG: ${{ inputs.tag }}
+      run: |
+        set -euo pipefail
+        target="registry.fly.io/${APP_NAME}:${TAG}"
+        docker tag "$IMAGE" "$target"
+        docker push "$target"
+        echo "image-uri=$target" >>"$GITHUB_OUTPUT"
