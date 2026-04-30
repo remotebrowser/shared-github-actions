@@ -155,7 +155,7 @@ Tag a local Docker image and push it to `registry.fly.io/<app-name>:<tag>`. Wrap
     fly-api-token: ${{ secrets.FLY_API_TOKEN }}
 ```
 
-The `image` input must already be in the local Docker daemon — either built in a previous step (`docker build`, [`container-health-check`](#container-health-check)) or pulled (`docker pull ghcr.io/...`). The action exposes the pushed URI as `outputs.image-uri` (`registry.fly.io/<app-name>:<tag>`) so downstream steps can reference the exact tag.
+The `image` input must be in the local Docker daemon when the action runs. Built locally (`docker build`, [`container-health-check`](#container-health-check)) it already is. For images on a remote registry (e.g. GHCR), set `pull: true` and the action will `docker pull` it for you — caller is still responsible for authenticating to the source registry first if it's private. The action exposes the pushed URI as `outputs.image-uri` (`registry.fly.io/<app-name>:<tag>`) so downstream steps can reference the exact tag.
 
 **Single-target by design.** To publish the same image to multiple Fly apps — even across different orgs — fan out via `strategy.matrix`, one row per target with its own `fly-api-token`. Each row gets fresh docker credentials, so per-org tokens stay isolated:
 
@@ -179,13 +179,15 @@ publish-fly:
         registry: ghcr.io
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    - run: docker pull ghcr.io/${{ github.repository }}:latest
     - uses: remotebrowser/shared-github-actions/push-fly-image@v1
       with:
         image: ghcr.io/${{ github.repository }}:latest
         app-name: ${{ matrix.target.app }}
         fly-api-token: ${{ secrets[matrix.target.token_secret] }}
+        pull: true   # docker pull --platform linux/amd64 first
 ```
+
+`pull: true` makes the action `docker pull --platform linux/amd64 <image>` before tagging — saves the explicit pull step and also makes `act` on Apple Silicon work (the Fly registry is amd64-only, so the platform pin is always correct).
 
 `${{ secrets[matrix.target.token_secret] }}` resolves the secret *name* from the matrix row to the actual secret *value* at step time — the YAML never holds a token. `fail-fast: false` keeps a failed push to one target from blocking the others.
 
