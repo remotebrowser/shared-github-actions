@@ -26,6 +26,17 @@ inputs:
       secrets context. Different orgs need different tokens — supply the
       right one per matrix row.
     required: true
+  pull:
+    description: >
+      If `true`, run `docker pull --platform linux/amd64 <image>` before
+      tagging. Useful when the image lives on a remote registry (e.g.
+      GHCR) rather than the local daemon. Platform is hardcoded because
+      the Fly registry only serves linux/amd64 — this also makes
+      `act` on Apple Silicon work without extra flags. Caller is
+      responsible for authenticating to the source registry beforehand
+      (e.g. via docker/login-action) when it's private.
+    required: false
+    default: "false"
 
 outputs:
   image-uri:
@@ -37,6 +48,13 @@ runs:
   steps:
     - name: Setup flyctl
       uses: superfly/flyctl-actions/setup-flyctl@master
+
+    - name: Pull source image
+      if: inputs.pull == 'true'
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+      run: docker pull --platform linux/amd64 "$IMAGE"
 
     - name: Authenticate docker to Fly registry
       shell: bash
