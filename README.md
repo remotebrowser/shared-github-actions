@@ -143,6 +143,56 @@ Each poll uses `curl -fs "$url" | grep -q "$match"` once per second until succes
 
 See `container-health-check/action.yml` for the full input list.
 
+### `push-fly-image`
+
+Tag a local Docker image and push it to `registry.fly.io/<app-name>:<tag>`. Wraps `flyctl auth docker` + `docker tag` + `docker push` so callers don't carry the auth setup themselves.
+
+```yaml
+- uses: remotebrowser/shared-github-actions/push-fly-image@v1
+  with:
+    image: ghcr.io/remotebrowser/chrome-live:latest
+    app-name: keep-chrome-live
+    fly-api-token: ${{ secrets.FLY_API_TOKEN }}
+```
+
+The `image` input must already be in the local Docker daemon — either built in a previous step (`docker build`, [`container-health-check`](#container-health-check)) or pulled (`docker pull ghcr.io/...`). The action exposes the pushed URI as `outputs.image-uri` (`registry.fly.io/<app-name>:<tag>`) so downstream steps can reference the exact tag.
+
+**Single-target by design.** To publish the same image to multiple Fly apps — even across different orgs — fan out via `strategy.matrix`, one row per target with its own `fly-api-token`. Each row gets fresh docker credentials, so per-org tokens stay isolated:
+
+```yaml
+publish-fly:
+  needs: publish
+  runs-on: ubuntu-22.04
+  strategy:
+    fail-fast: false
+    matrix:
+      target:
+        - app: keep-chrome-live
+          token_secret: FLY_API_TOKEN_KEEP_ORG       # org A
+        - app: chrome-live-staging
+          token_secret: FLY_API_TOKEN_KEEP_ORG       # same org, different app
+        - app: chrome-live-mirror
+          token_secret: FLY_API_TOKEN_PARTNER_ORG    # different org, different token
+  steps:
+    - uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - run: docker pull ghcr.io/${{ github.repository }}:latest
+    - uses: remotebrowser/shared-github-actions/push-fly-image@v1
+      with:
+        image: ghcr.io/${{ github.repository }}:latest
+        app-name: ${{ matrix.target.app }}
+        fly-api-token: ${{ secrets[matrix.target.token_secret] }}
+```
+
+`${{ secrets[matrix.target.token_secret] }}` resolves the secret *name* from the matrix row to the actual secret *value* at step time — the YAML never holds a token. `fail-fast: false` keeps a failed push to one target from blocking the others.
+
+For workflows that already use [`prepare-matrix`](#prepare-matrix), feed it `{app, token_secret}` entries and reference the output the same way.
+
+See `push-fly-image/action.yml` for the full input list.
+
 ### `prepare-matrix`
 
 Filter a JSON entry list down to user-selected items, or fall back to the full list when nothing is selected. Designed for a `prepare-matrix` job whose output feeds `strategy.matrix.include` (object array) or `strategy.matrix.<key>` (string array) via `fromJSON()`.
