@@ -85,10 +85,18 @@ runs:
 
         keys=$(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' <<<"$SECRETS" | sort -u)
 
-        # Stale cleanup only runs when Doppler is the source of truth — without it
-        # we have no full picture of "wanted" and could wipe manually-set secrets.
-        if [ -n "$DOPPLER_TOKEN" ]; then
-          current=$(flyctl secrets list --app "$APP_NAME" --json | jq -r '.[].Name' | sort -u)
+        # Stale cleanup only runs when Doppler is the source of truth and we have
+        # a non-empty wanted-set — without either, we have no full picture and
+        # could wipe manually-set secrets or mass-mark everything as stale.
+        if [ -n "$DOPPLER_TOKEN" ] && [ -n "$keys" ]; then
+          current=$(flyctl secrets list --app "$APP_NAME" --json | jq -r '.[].name' | sort -u)
+          # Guard against jq filter / flyctl schema drift: if the field name
+          # changes again, jq -r yields literal "null" strings and we'd "unset"
+          # a phantom secret named `null` while the real stale ones slip through.
+          if printf '%s\n' "$current" | grep -qx 'null'; then
+            echo "::error::flyctl secrets list returned 'null' for a secret name — schema likely changed, refusing to compute stale diff" >&2
+            exit 1
+          fi
           stale=$(comm -23 <(printf '%s\n' "$current") <(printf '%s\n' "$keys"))
           if [ -n "$stale" ]; then
             echo "Unsetting stale secrets:"
