@@ -100,7 +100,11 @@ runs:
           fi
         fi
 
-        flyctl secrets import --app "$APP_NAME" --stage <<<"$SECRETS"
+        if [ -n "$keys" ]; then
+          flyctl secrets import --app "$APP_NAME" --stage <<<"$SECRETS"
+        else
+          echo "No secrets to import."
+        fi
 
     - name: Deploy
       shell: bash

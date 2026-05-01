@@ -118,7 +118,13 @@ runs:
         org_args=()
         [ -n "${FLY_ORG_SLUG:-}" ] && org_args=(--org "$FLY_ORG_SLUG")
         flyctl apps create "$TEST_ON_FLY_APP" "${org_args[@]}"
-        flyctl secrets import --app "$TEST_ON_FLY_APP" --stage <<<"$SECRETS"
+
+        keys=$(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' <<<"$SECRETS" | sort -u)
+        if [ -n "$keys" ]; then
+          flyctl secrets import --app "$TEST_ON_FLY_APP" --stage <<<"$SECRETS"
+        else
+          echo "No secrets to import."
+        fi
 
     - name: Deploy test app
       shell: bash
