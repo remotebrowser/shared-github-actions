@@ -36,7 +36,7 @@ Installs the `doppler-export` shell script on `$PATH`. Consumers then pipe its o
 
 ### `deploy-fly`
 
-Deploy a Fly app. Builds a single dotenv stream of secrets and imports it with one `flyctl secrets import`, then `flyctl deploy --strategy bluegreen --env GIT_REV=<github.sha>`. The stream is, in order:
+Deploy a Fly app. Builds a single dotenv stream of secrets and imports it with one `flyctl secrets import`, then `flyctl deploy --strategy <auto> --env GIT_REV=<github.sha>`. Strategy defaults to `bluegreen` for stateless apps; if the app has any volumes attached, the action auto-detects this (`flyctl volumes list`) and switches to `rolling` since bluegreen can't run a parallel green fleet against an exclusive volume. The stream is, in order:
 
 1. **Doppler** — every key from the configured Doppler project/config.
 2. **`extra-secrets`** input (optional) — additional `KEY=VALUE` lines from the workflow. Applied last, so a key here overrides the same key from Doppler.

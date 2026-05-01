@@ -121,10 +121,16 @@ runs:
           echo "FLY_API_TOKEN missing — earlier resolution step must have failed." >&2
           exit 1
         fi
+        strategy=bluegreen
+        volume_count=$(flyctl volumes list --app "${{ inputs.app-name }}" --json 2>/dev/null | jq 'length')
+        if [ "${volume_count:-0}" -gt 0 ]; then
+          echo "App has $volume_count volume(s) — using rolling strategy (bluegreen incompatible with volumes)."
+          strategy=rolling
+        fi
         flyctl deploy \
           --app "${{ inputs.app-name }}" \
           --config "${{ inputs.fly-toml }}" \
           --dockerfile "${{ inputs.dockerfile }}" \
-          --strategy bluegreen \
+          --strategy "$strategy" \
           --local-only \
           --env "GIT_REV=$GITHUB_SHA"
