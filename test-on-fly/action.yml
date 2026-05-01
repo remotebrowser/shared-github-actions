@@ -134,7 +134,8 @@ runs:
           --strategy immediate \
           --local-only \
           --ha=false \
-          --flycast
+          --flycast \
+          --env "GIT_REV=$GITHUB_SHA"
 
     - name: Wait for result marker
       shell: bash

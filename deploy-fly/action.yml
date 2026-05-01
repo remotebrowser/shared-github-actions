@@ -114,4 +114,5 @@ runs:
           --config "${{ inputs.fly-toml }}" \
           --dockerfile "${{ inputs.dockerfile }}" \
           --strategy bluegreen \
-          --local-only
+          --local-only \
+          --env "GIT_REV=$GITHUB_SHA"

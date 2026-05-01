@@ -15,7 +15,10 @@
 #   FLY_ORG_SLUG   extracted from Doppler when present (also written to $GITHUB_ENV).
 #                  Empty if Doppler doesn't have it. Callers needing --org should
 #                  check and either fall back or fail with a clearer error.
-#   SECRETS        full dotenv stream: Doppler + GIT_REV + EXTRA_SECRETS
+#   SECRETS        full dotenv stream: Doppler + EXTRA_SECRETS
+#                  (GIT_REV is set as a regular Fly env var by the caller via
+#                  `flyctl deploy --env`, not as a secret, so the Machines API
+#                  exposes it in `config.env`.)
 #
 # Errors via `return 1` so that callers' `set -e` propagates without killing
 # their shell prematurely; falls back to `exit 1` if not sourced.
@@ -66,6 +69,6 @@ if [ -n "$FLY_ORG_SLUG" ]; then
 fi
 export FLY_ORG_SLUG
 
-# Final stream: Doppler first, then GIT_REV, then EXTRA_SECRETS (last wins on dup keys).
-SECRETS=$(printf '%s\nGIT_REV="%s"\n%s\n' "$SECRETS" "$GITHUB_SHA" "${EXTRA_SECRETS:-}")
+# Final stream: Doppler first, then EXTRA_SECRETS (last wins on dup keys).
+SECRETS=$(printf '%s\n%s\n' "$SECRETS" "${EXTRA_SECRETS:-}")
 export SECRETS
