@@ -92,13 +92,15 @@ jq -r 'to_entries[] | @base64' <<<"$json" | while read -r b64; do
     printf "export %s='%s'\n" "$k" "$esc"
     ;;
   dotenv)
-    # Always double-quote; escape \ " $ ` for POSIX-shell-ish dotenv parsers.
-    # Newlines are preserved literally inside the quoted value (flyctl/docker
-    # handling varies — see README caveats).
+    # Always double-quote; escape \ " $ ` and newlines for dotenv parsers.
+    # Newlines are encoded as \n so each secret stays on a single line —
+    # flyctl secrets import reads line-by-line and chokes on literal newlines.
     esc=${v//\\/\\\\}
     esc=${esc//\"/\\\"}
     esc=${esc//\$/\\\$}
     esc=${esc//\`/\\\`}
+    esc=${esc//$'\n'/\\n}
+    esc=${esc//$'\r'/\\r}
     printf '%s="%s"\n' "$k" "$esc"
     ;;
   json)
