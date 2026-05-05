@@ -1,5 +1,7 @@
 # shared-github-actions
 
+> **After merging to `main`:** run the [Patch release](../../actions/workflows/tag-release.yml) workflow to tag the release and advance `v1`.
+
 Reusable GitHub Actions shared across multiple repositories.
 
 ## Actions
@@ -252,3 +254,5 @@ See `prepare-matrix/action.yml` for the full input list.
 
 - Pin to `@v1` for auto-patch updates, or to a full commit SHA for strict supply-chain posture.
 - Breaking changes bump to `v2` (and get a new moving `v2` tag).
+
+After merging to `main`, run the **Patch release** workflow manually (`Actions → Patch release → Run workflow`) to create a new patch tag and advance the `v1` pointer.
