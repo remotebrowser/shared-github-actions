@@ -156,7 +156,6 @@ runs:
           -a "$TEST_ON_FLY_APP" >/dev/null 2>&1; do
           if [ $elapsed -ge $timeout ]; then
             echo "timeout waiting for ${{ inputs.result-file }} after ${timeout}s"
-            flyctl ssh sftp get -R "${{ inputs.logs-dir }}" ./logs -a "$TEST_ON_FLY_APP" || true
             exit 1
           fi
           sleep 10
