@@ -122,6 +122,8 @@ runs:
         fi
 
         if [ -n "$keys" ]; then
+          echo "Importing secrets:"
+          printf '  %s\n' $keys
           flyctl secrets import --app "$APP_NAME" --stage <<<"$SECRETS"
         else
           echo "No secrets to import."
