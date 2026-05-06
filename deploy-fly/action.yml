@@ -42,6 +42,14 @@ inputs:
       the workflow's secrets context if they're sensitive.
     required: false
     default: ""
+  doppler-var-prefix:
+    description: >
+      When set, only Doppler secrets whose key starts with this prefix are
+      forwarded to the Fly app. FLY_API_TOKEN and FLY_ORG_SLUG are always
+      included regardless. Example: "GRABBIT_" to pass only GRABBIT_* vars.
+      Useful when a shared Doppler config holds secrets for multiple apps.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -77,11 +85,16 @@ runs:
         DOPPLER_CONFIG: ${{ inputs.doppler-config }}
         FLY_API_TOKEN_INPUT: ${{ inputs.fly-api-token }}
         EXTRA_SECRETS: ${{ inputs.extra-secrets }}
+        DOPPLER_VAR_PREFIX: ${{ inputs.doppler-var-prefix }}
         APP_NAME: ${{ inputs.app-name }}
       run: |
         set -euo pipefail
         # Resolves FLY_API_TOKEN (input vs Doppler) and exports SECRETS.
         . "$GITHUB_ACTION_PATH/../_lib/load-secrets.sh"
+
+        if [ -n "${DOPPLER_VAR_PREFIX:-}" ]; then
+          SECRETS=$(grep -E "^(${DOPPLER_VAR_PREFIX}[A-Za-z0-9_]*=|FLY_API_TOKEN=|FLY_ORG_SLUG=)" <<<"$SECRETS" || true)
+        fi
 
         keys=$(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' <<<"$SECRETS" | sort -u)
 
@@ -109,6 +122,8 @@ runs:
         fi
 
         if [ -n "$keys" ]; then
+          echo "Importing secrets:"
+          printf '  %s\n' $keys
           flyctl secrets import --app "$APP_NAME" --stage <<<"$SECRETS"
         else
           echo "No secrets to import."

@@ -58,9 +58,6 @@ json=$(curl -sS --fail-with-body \
   -H "authorization: Bearer $DOPPLER_TOKEN" \
   "https://api.doppler.com/v3/configs/config/secrets/download?project=${project}&config=${config}&format=json")
 
-# List downloaded keys, one per line, on stderr.
-jq -r 'keys[]' <<<"$json" >&2
-
 # Case-insensitive substring match identifying values that should be masked.
 # Keys without any of these substrings (e.g. LOG_LEVEL, ENVIRONMENT) stay visible.
 SENSITIVE_RE='(KEY|TOKEN|PASSWORD|PASSWD|PWD)'
