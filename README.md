@@ -126,6 +126,17 @@ For anything else `docker run` accepts (`--network`, `-v`, extra `-e`, etc.) use
       -e CHROMEFLEET_URL=http://localhost:8300
 ```
 
+To pass build-time arguments to the image, use `build-args` (one `KEY=VALUE` per line, blank and `#` comment lines ignored). Each line is forwarded as `--build-arg KEY=VALUE` to `docker build`. Useful for gating an optional feature behind a build arg, e.g. `BROWSER_BACKEND=daytona`:
+
+```yaml
+- uses: remotebrowser/shared-github-actions/container-health-check@v1
+  with:
+    image-name: mcp
+    health-url: http://localhost:23456/health
+    build-args: |
+      BROWSER_BACKEND=daytona
+```
+
 For multiple endpoints on the same container, use `health-checks` (one JSON object per line). Checks run sequentially, each gets the full `health-timeout-seconds` budget. **Don't** add a follow-up `curl` step in the calling workflow — the container is removed in this action's `always()` step, so external polling after it returns will fail:
 
 ```yaml
