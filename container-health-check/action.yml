@@ -22,6 +22,12 @@ inputs:
     description: Build context directory.
     required: false
     default: "."
+  build-args:
+    description: >
+      Newline-separated KEY=VALUE pairs, each forwarded as `--build-arg KEY=VALUE` to
+      `docker build`. Blank lines and `#` comment lines are ignored.
+    required: false
+    default: ""
   port-mapping:
     description: -p arg for `docker run`, e.g. `8300:8300`. Skipped when empty.
     required: false
@@ -101,7 +107,18 @@ runs:
         IMAGE: ${{ inputs.image-name }}
         DOCKERFILE: ${{ inputs.dockerfile }}
         CONTEXT: ${{ inputs.context }}
-      run: docker build -t "$IMAGE" -f "$DOCKERFILE" "$CONTEXT"
+        BUILD_ARGS: ${{ inputs.build-args }}
+      run: |
+        set -euo pipefail
+        build_arg_flags=()
+        if [ -n "$BUILD_ARGS" ]; then
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            build_arg_flags+=(--build-arg "$line")
+          done <<<"$BUILD_ARGS"
+        fi
+        docker build -t "$IMAGE" -f "$DOCKERFILE" "${build_arg_flags[@]}" "$CONTEXT"
 
     - name: Run container
       shell: bash
