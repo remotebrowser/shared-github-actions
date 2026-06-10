@@ -63,6 +63,16 @@ Deploy a Fly app. Builds a single dotenv stream of secrets and imports it with o
 
 `extra-secrets` values are not auto-masked in workflow logs — pass them via `${{ secrets.* }}` if they're sensitive. Stale-secret cleanup runs only when `doppler-token` is set, and operates against the full union of Doppler keys + `extra-secrets` keys, so none of these are ever flagged as stale. (Apps that used the previous behavior — where `GIT_REV` was a Fly secret — will see the stale `GIT_REV` secret cleaned up on the next deploy and replaced by the env var.)
 
+To pass build-time arguments to the image build, use `build-args` (one `KEY=VALUE` per line, blank and `#` comment lines ignored). Each line is forwarded as `--build-arg KEY=VALUE` to `flyctl deploy`:
+
+```yaml
+- uses: remotebrowser/shared-github-actions/deploy-fly@v1
+  with:
+    app-name: flyfleet
+    build-args: |
+      BROWSER_BACKEND=daytona
+```
+
 See `deploy-fly/action.yml` for the full input list.
 
 ### `test-on-fly`
@@ -84,7 +94,7 @@ Deploy a throwaway Fly app, wait for a result marker file written by the contain
       CONTAINER_IMAGE=registry.fly.io/keep-chrome-live-ci:latest
 ```
 
-A random hex suffix is appended to `app-name-prefix` to keep concurrent runs isolated. The deployed test container can read its commit SHA from the `GIT_REV` env var.
+A random hex suffix is appended to `app-name-prefix` to keep concurrent runs isolated. The deployed test container can read its commit SHA from the `GIT_REV` env var. `build-args` is also supported, with the same format and semantics as `deploy-fly`.
 
 See `test-on-fly/action.yml` for the full input list.
 
