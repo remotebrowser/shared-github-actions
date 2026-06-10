@@ -24,6 +24,12 @@ inputs:
     description: Path to Dockerfile for the test app.
     required: false
     default: Dockerfile.test
+  build-args:
+    description: >
+      Newline-separated KEY=VALUE pairs, each forwarded as `--build-arg KEY=VALUE` to
+      `flyctl deploy`. Blank lines and `#` comment lines are ignored.
+    required: false
+    default: ""
   doppler-token:
     description: Doppler API token. If empty, secret sync is skipped entirely.
     required: false
@@ -128,10 +134,21 @@ runs:
 
     - name: Deploy test app
       shell: bash
+      env:
+        BUILD_ARGS: ${{ inputs.build-args }}
       run: |
+        set -euo pipefail
         if [ -z "${FLY_API_TOKEN:-}" ]; then
           echo "FLY_API_TOKEN missing — earlier resolution step must have failed." >&2
           exit 1
+        fi
+        build_arg_flags=()
+        if [ -n "$BUILD_ARGS" ]; then
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            build_arg_flags+=(--build-arg "$line")
+          done <<<"$BUILD_ARGS"
         fi
         flyctl deploy \
           --app "$TEST_ON_FLY_APP" \
@@ -141,7 +158,8 @@ runs:
           --local-only \
           --ha=false \
           --flycast \
-          --env "GIT_REV=$GITHUB_SHA"
+          --env "GIT_REV=$GITHUB_SHA" \
+          "${build_arg_flags[@]}"
 
     - name: Wait for result marker
       shell: bash

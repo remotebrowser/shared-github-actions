@@ -50,6 +50,12 @@ inputs:
       Useful when a shared Doppler config holds secrets for multiple apps.
     required: false
     default: ""
+  build-args:
+    description: >
+      Newline-separated KEY=VALUE pairs, each forwarded as `--build-arg KEY=VALUE` to
+      `flyctl deploy`. Blank lines and `#` comment lines are ignored.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -131,7 +137,10 @@ runs:
 
     - name: Deploy
       shell: bash
+      env:
+        BUILD_ARGS: ${{ inputs.build-args }}
       run: |
+        set -euo pipefail
         if [ -z "${FLY_API_TOKEN:-}" ]; then
           echo "FLY_API_TOKEN missing — earlier resolution step must have failed." >&2
           exit 1
@@ -142,10 +151,19 @@ runs:
           echo "App has $volume_count volume(s) — using rolling strategy (bluegreen incompatible with volumes)."
           strategy=rolling
         fi
+        build_arg_flags=()
+        if [ -n "$BUILD_ARGS" ]; then
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            build_arg_flags+=(--build-arg "$line")
+          done <<<"$BUILD_ARGS"
+        fi
         flyctl deploy \
           --app "${{ inputs.app-name }}" \
           --config "${{ inputs.fly-toml }}" \
           --dockerfile "${{ inputs.dockerfile }}" \
           --strategy "$strategy" \
           --local-only \
-          --env "GIT_REV=$GITHUB_SHA"
+          --env "GIT_REV=$GITHUB_SHA" \
+          "${build_arg_flags[@]}"
