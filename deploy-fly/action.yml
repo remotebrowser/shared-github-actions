@@ -62,6 +62,18 @@ inputs:
       the start of a value is only kept when it is not a valid `$NAME` reference.
     required: false
     default: ""
+  build-secrets:
+    description: >
+      Newline-separated KEY=VALUE pairs, each forwarded as `--build-secret KEY=VALUE` to
+      `flyctl deploy` (a BuildKit secret the Dockerfile reads via `--mount=type=secret,id=KEY`,
+      so unlike a build-arg the value never lands in the image or its history). Blank lines and
+      `#` comment lines are ignored.
+
+      Values support the same `$NAME` / `${NAME}` reference to a fetched Doppler/extra secret as
+      build-args (resolved once, masked in the logs); a literal value is passed through as-is.
+      Use this for credentials the build needs, e.g. a read token for a private package registry.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -100,28 +112,35 @@ runs:
         DOPPLER_VAR_PREFIX: ${{ inputs.doppler-var-prefix }}
         APP_NAME: ${{ inputs.app-name }}
         BUILD_ARGS_RAW: ${{ inputs.build-args }}
+        BUILD_SECRETS_RAW: ${{ inputs.build-secrets }}
       run: |
         set -euo pipefail
         # Resolves FLY_API_TOKEN (input vs Doppler) and exports SECRETS.
         . "$GITHUB_ACTION_PATH/../_lib/load-secrets.sh"
 
-        # Resolve build-args here, where SECRETS (the full dotenv, before the prefix filter below)
-        # is in scope. A VALUE of `$NAME`/`${NAME}` is replaced with that secret's value; the result
-        # is handed to the Deploy step via $GITHUB_ENV so SECRETS never has to leave this step. Kept
-        # ahead of the prefix filter so a reference can name any fetched secret, not just a prefixed
-        # one.
-        if [ -n "${BUILD_ARGS_RAW:-}" ]; then
-          resolved=""
+        # Resolve build-args / build-secrets here, where SECRETS (the full dotenv, before the prefix
+        # filter below) is in scope. A VALUE of `$NAME`/`${NAME}` is replaced with that secret's
+        # value; the result is handed to the Deploy step via $GITHUB_ENV so SECRETS never has to
+        # leave this step. Kept ahead of the prefix filter so a reference can name any fetched
+        # secret, not just a prefixed one.
+        #
+        # resolve_refs reads newline KEY=VALUE input, replacing each `$NAME`/`${NAME}` VALUE with the
+        # fetched secret (masked), and leaves the resolved text in the RESOLVED global. The add-mask
+        # lines go to the step log (stdout), never into RESOLVED / $GITHUB_ENV.
+        RESOLVED=""
+        resolve_refs() {
+          local label=$1 raw=$2 line key val ref enc value
+          RESOLVED=""
           while IFS= read -r line || [ -n "$line" ]; do
             if [ -z "$line" ] || [[ "$line" =~ ^[[:space:]]*# ]]; then
-              resolved+="$line"$'\n'; continue
+              RESOLVED+="$line"$'\n'; continue
             fi
             key=${line%%=*}; val=${line#*=}
             if [[ "$val" =~ ^\$[{]?([A-Za-z_][A-Za-z0-9_]*)[}]?$ ]]; then
               ref=${BASH_REMATCH[1]}
               enc=$(grep -E "^${ref}=" <<<"$SECRETS" | head -n1 || true)
               if [ -z "$enc" ]; then
-                echo "::error::build-args '${key}' references \$${ref}, which is not among the loaded secrets" >&2
+                echo "::error::${label} '${key}' references \$${ref}, which is not among the loaded secrets" >&2
                 exit 1
               fi
               # SECRETS values are dotenv (double-quoted, doppler-export escaping). Strip the quotes
@@ -130,15 +149,28 @@ runs:
               enc=${enc#*=}; enc=${enc#\"}; enc=${enc%\"}
               value=$(printf '%s' "$enc" | perl -pe 's/\\(.)/ $1 eq "n" ? "\n" : ($1 eq "r" ? "\r" : $1) /ge')
               printf '::add-mask::%s\n' "$value"
-              resolved+="${key}=${value}"$'\n'
+              RESOLVED+="${key}=${value}"$'\n'
             else
-              resolved+="$line"$'\n'
+              RESOLVED+="$line"$'\n'
             fi
-          done <<<"$BUILD_ARGS_RAW"
+          done <<<"$raw"
+        }
+
+        if [ -n "${BUILD_ARGS_RAW:-}" ]; then
+          resolve_refs build-args "$BUILD_ARGS_RAW"
           {
             echo "RESOLVED_BUILD_ARGS<<__DEPLOY_FLY_BUILD_ARGS__"
-            printf '%s' "$resolved"
+            printf '%s' "$RESOLVED"
             echo "__DEPLOY_FLY_BUILD_ARGS__"
+          } >>"$GITHUB_ENV"
+        fi
+
+        if [ -n "${BUILD_SECRETS_RAW:-}" ]; then
+          resolve_refs build-secrets "$BUILD_SECRETS_RAW"
+          {
+            echo "RESOLVED_BUILD_SECRETS<<__DEPLOY_FLY_BUILD_SECRETS__"
+            printf '%s' "$RESOLVED"
+            echo "__DEPLOY_FLY_BUILD_SECRETS__"
           } >>"$GITHUB_ENV"
         fi
 
@@ -183,8 +215,9 @@ runs:
       shell: bash
       env:
         # Resolved by the Stage secrets step ($NAME refs replaced with secret values); falls back to
-        # the raw input when that step wrote nothing (no build-args, or build-args with no refs).
+        # the raw input when that step wrote nothing (no build-args/secrets, or none with refs).
         BUILD_ARGS: ${{ env.RESOLVED_BUILD_ARGS || inputs.build-args }}
+        BUILD_SECRETS: ${{ env.RESOLVED_BUILD_SECRETS || inputs.build-secrets }}
       run: |
         set -euo pipefail
         if [ -z "${FLY_API_TOKEN:-}" ]; then
@@ -205,6 +238,14 @@ runs:
             build_arg_flags+=(--build-arg "$line")
           done <<<"$BUILD_ARGS"
         fi
+        build_secret_flags=()
+        if [ -n "$BUILD_SECRETS" ]; then
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            build_secret_flags+=(--build-secret "$line")
+          done <<<"$BUILD_SECRETS"
+        fi
         flyctl deploy \
           --app "${{ inputs.app-name }}" \
           --config "${{ inputs.fly-toml }}" \
@@ -212,4 +253,5 @@ runs:
           --strategy "$strategy" \
           --local-only \
           --env "GIT_REV=$GITHUB_SHA" \
-          "${build_arg_flags[@]}"
+          "${build_arg_flags[@]}" \
+          "${build_secret_flags[@]}"
