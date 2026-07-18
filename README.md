@@ -73,6 +73,16 @@ To pass build-time arguments to the image build, use `build-args` (one `KEY=VALU
       BROWSER_BACKEND=daytona
 ```
 
+For build-time credentials that must NOT persist in the image (e.g. a read token for a private package registry), use `build-secrets` instead — same `KEY=VALUE` per line format, forwarded as `--build-secret KEY=VALUE` (a BuildKit secret the Dockerfile reads via `--mount=type=secret,id=KEY`). Both inputs support the `$NAME` / `${NAME}` reference to a fetched Doppler/`extra-secrets` value; a literal value is passed through as-is (mask it via `${{ secrets.* }}`):
+
+```yaml
+- uses: remotebrowser/shared-github-actions/deploy-fly@v1
+  with:
+    app-name: corelens-lab
+    build-secrets: |
+      github_token=${{ secrets.GITHUB_TOKEN }}
+```
+
 See `deploy-fly/action.yml` for the full input list.
 
 ### `test-on-fly`
