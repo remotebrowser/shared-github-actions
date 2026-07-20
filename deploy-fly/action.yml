@@ -50,6 +50,18 @@ inputs:
       Useful when a shared Doppler config holds secrets for multiple apps.
     required: false
     default: ""
+  env:
+    description: >
+      Newline-separated KEY=VALUE pairs, each forwarded as `--env KEY=VALUE` to
+      `flyctl deploy` — plain (non-secret) runtime environment variables on the
+      deployed app. Blank lines and `#` comment lines are ignored. Applied after
+      the built-in `GIT_REV`, so passing `GIT_REV=...` here overrides it.
+
+      Use this only for non-sensitive values: `--env` vars are stored in the app
+      config (visible via `flyctl config`/the Machines API). For secrets use
+      `extra-secrets` or Doppler instead.
+    required: false
+    default: ""
   build-args:
     description: >
       Newline-separated KEY=VALUE pairs, each forwarded as `--build-arg KEY=VALUE` to
@@ -227,6 +239,7 @@ runs:
         # the raw input when that step wrote nothing (no build-args/secrets, or none with refs).
         BUILD_ARGS: ${{ env.RESOLVED_BUILD_ARGS || inputs.build-args }}
         BUILD_SECRETS: ${{ env.RESOLVED_BUILD_SECRETS || inputs.build-secrets }}
+        ENV_VARS: ${{ inputs.env }}
       run: |
         set -euo pipefail
         if [ -z "${FLY_API_TOKEN:-}" ]; then
@@ -255,13 +268,22 @@ runs:
             build_secret_flags+=(--build-secret "$line")
           done <<<"$BUILD_SECRETS"
         fi
+        # GIT_REV first so a user-supplied GIT_REV in `env` overrides it (last --env wins).
+        env_flags=(--env "GIT_REV=$GITHUB_SHA")
+        if [ -n "$ENV_VARS" ]; then
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            env_flags+=(--env "$line")
+          done <<<"$ENV_VARS"
+        fi
         flyctl deploy \
           --app "${{ inputs.app-name }}" \
           --config "${{ inputs.fly-toml }}" \
           --dockerfile "${{ inputs.dockerfile }}" \
           --strategy "$strategy" \
           --local-only \
-          --env "GIT_REV=$GITHUB_SHA" \
+          "${env_flags[@]}" \
           "${build_arg_flags[@]}" \
           "${build_secret_flags[@]}"
 

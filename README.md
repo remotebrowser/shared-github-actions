@@ -83,6 +83,17 @@ For build-time credentials that must NOT persist in the image (e.g. a read token
       github_token=${{ secrets.GITHUB_TOKEN }}
 ```
 
+To set plain (non-secret) runtime environment variables on the app, use `env` (one `KEY=VALUE` per line, blank and `#` comment lines ignored). Each line is forwarded as `--env KEY=VALUE` to `flyctl deploy`, alongside the built-in `GIT_REV`. Values land in the app config (visible via `flyctl config` and the Machines API), so keep secrets in `extra-secrets`/Doppler. A `GIT_REV=...` line here overrides the built-in one:
+
+```yaml
+- uses: remotebrowser/shared-github-actions/deploy-fly@v1
+  with:
+    app-name: flyfleet
+    env: |
+      DEPLOY_ENV=${{ github.ref_name }}
+      LOG_LEVEL=info
+```
+
 To keep the app warm after a deploy, set `auto-start-machines: true`. Once the deploy succeeds, the action lists the app's machines and proactively starts any that are `stopped` or `suspended`, so the first incoming request doesn't pay a cold start. Each machine is started independently and retried with backoff (5 tries, exponential); a machine that came up on its own between the list and start is treated as already started. It only starts machines that aren't running, and never edits `fly.toml` or the app's autostart/autostop config:
 
 ```yaml
