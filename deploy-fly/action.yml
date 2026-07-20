@@ -74,6 +74,15 @@ inputs:
       Use this for credentials the build needs, e.g. a read token for a private package registry.
     required: false
     default: ""
+  auto-start-machines:
+    description: >
+      When "true", proactively start any stopped or suspended machines after a
+      successful deploy so the app is warm and the first incoming request does not
+      pay a cold start. Each machine is started independently and retried with
+      backoff. This only starts machines that are not already running; it does not
+      edit fly.toml or change the app's autostart/autostop config.
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -255,3 +264,66 @@ runs:
           --env "GIT_REV=$GITHUB_SHA" \
           "${build_arg_flags[@]}" \
           "${build_secret_flags[@]}"
+
+    - name: Start machines
+      if: inputs.auto-start-machines == 'true'
+      shell: bash
+      env:
+        APP_NAME: ${{ inputs.app-name }}
+      run: |
+        set -euo pipefail
+        if [ -z "${FLY_API_TOKEN:-}" ]; then
+          echo "FLY_API_TOKEN missing — earlier resolution step must have failed." >&2
+          exit 1
+        fi
+
+        # flyctl / Machines API calls flake on transient 5xx and lease contention,
+        # so every network call here runs through retry(): up to 5 tries with
+        # exponential backoff (2s, 4s, 8s, 16s). Progress goes to stderr so it
+        # never pollutes stdout that a caller captures (e.g. the machine list).
+        retry() {
+          local max=5 attempt=1 delay=2
+          while true; do
+            if "$@"; then return 0; fi
+            if [ "$attempt" -ge "$max" ]; then
+              echo "::error::command failed after ${max} attempts: $*" >&2
+              return 1
+            fi
+            echo "attempt ${attempt}/${max} failed; retrying in ${delay}s: $*" >&2
+            sleep "$delay"
+            attempt=$((attempt + 1))
+            delay=$((delay * 2))
+          done
+        }
+
+        # A machine can flip to started between the list and the start call (Fly
+        # proxy autostart, or another deploy step). Treat "already started" as
+        # success so the retry loop doesn't burn attempts and fail on a no-op.
+        start_machine() {
+          local id=$1 state
+          if flyctl machine start "$id" --app "$APP_NAME"; then
+            return 0
+          fi
+          state=$(flyctl machine status "$id" --app "$APP_NAME" --json 2>/dev/null | jq -r '.state // empty')
+          [ "$state" = "started" ]
+        }
+
+        machines_json=$(retry flyctl machine list --app "$APP_NAME" --json)
+
+        mapfile -t to_start < <(
+          jq -r '.[] | select(.state == "stopped" or .state == "suspended") | .id' <<<"$machines_json"
+        )
+
+        if [ "${#to_start[@]}" -eq 0 ]; then
+          echo "No stopped or suspended machines to start."
+          exit 0
+        fi
+
+        echo "Starting ${#to_start[@]} machine(s): ${to_start[*]}"
+        rc=0
+        for id in "${to_start[@]}"; do
+          if ! retry start_machine "$id"; then
+            rc=1
+          fi
+        done
+        exit "$rc"

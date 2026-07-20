@@ -83,6 +83,15 @@ For build-time credentials that must NOT persist in the image (e.g. a read token
       github_token=${{ secrets.GITHUB_TOKEN }}
 ```
 
+To keep the app warm after a deploy, set `auto-start-machines: true`. Once the deploy succeeds, the action lists the app's machines and proactively starts any that are `stopped` or `suspended`, so the first incoming request doesn't pay a cold start. Each machine is started independently and retried with backoff (5 tries, exponential); a machine that came up on its own between the list and start is treated as already started. It only starts machines that aren't running, and never edits `fly.toml` or the app's autostart/autostop config:
+
+```yaml
+- uses: remotebrowser/shared-github-actions/deploy-fly@v1
+  with:
+    app-name: flyfleet
+    auto-start-machines: true
+```
+
 See `deploy-fly/action.yml` for the full input list.
 
 ### `test-on-fly`
