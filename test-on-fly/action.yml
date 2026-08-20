@@ -118,8 +118,8 @@ runs:
       run: |
         set -euo pipefail
         # Resolves FLY_API_TOKEN + FLY_ORG_SLUG (from input vs Doppler) and
-        # exports SECRETS via a single doppler-export call. No stale-cleanup
-        # pass — the app is fresh.
+        # exports SECRETS (plus dotenv_decode / dotenv_to_args) via a single
+        # doppler-export call. No stale-cleanup pass — the app is fresh.
         . "$GITHUB_ACTION_PATH/../_lib/load-secrets.sh"
         org_args=()
         [ -n "${FLY_ORG_SLUG:-}" ] && org_args=(--org "$FLY_ORG_SLUG")
@@ -127,9 +127,14 @@ runs:
 
         keys=$(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' <<<"$SECRETS" | sort -u)
         if [ -n "$keys" ]; then
-          flyctl secrets import --app "$TEST_ON_FLY_APP" --stage <<<"$SECRETS"
+          # Decoded values go over argv, which carries quotes, backslashes and real
+          # newlines; `secrets import` reads stdin line by line and would deliver the
+          # dotenv escaping verbatim. The `-` on stdin is what flyctl reads for a
+          # secret whose value is exactly "-" (see dotenv_to_args).
+          dotenv_to_args "$SECRETS"
+          flyctl secrets set --app "$TEST_ON_FLY_APP" --stage "${SECRET_ARGS[@]}" <<<'-'
         else
-          echo "No secrets to import."
+          echo "No secrets to set."
         fi
 
     - name: Deploy test app

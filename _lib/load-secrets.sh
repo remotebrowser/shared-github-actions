@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sourced by deploy-fly and test-on-fly. One doppler-export call total per
 # action invocation; the in-memory output is reused for both FLY_API_TOKEN
-# resolution and the eventual `flyctl secrets import`.
+# resolution and the eventual `flyctl secrets set`.
 #
 # Inputs (env, set by caller):
 #   DOPPLER_TOKEN        optional; when set, secrets are fetched from Doppler
@@ -15,7 +15,9 @@
 #   FLY_ORG_SLUG   extracted from Doppler when present (also written to $GITHUB_ENV).
 #                  Empty if Doppler doesn't have it. Callers needing --org should
 #                  check and either fall back or fail with a clearer error.
-#   SECRETS        full dotenv stream: Doppler + EXTRA_SECRETS
+#   SECRETS        full dotenv stream: Doppler + EXTRA_SECRETS. Values are still
+#                  dotenv-escaped — run each through `dotenv_decode` before
+#                  handing it to anything that isn't a dotenv parser.
 #                  (GIT_REV is set as a regular Fly env var by the caller via
 #                  `flyctl deploy --env`, not as a secret, so the Machines API
 #                  exposes it in `config.env`.)
@@ -24,6 +26,19 @@
 # their shell prematurely; falls back to `exit 1` if not sourced.
 
 set -euo pipefail
+
+# dotenv_decode: undoes the doppler-export escaping. Sourced here rather than in
+# each action so every consumer of SECRETS has exactly one decoder in scope.
+# shellcheck source=_lib/dotenv.sh
+. "$(dirname "${BASH_SOURCE[0]}")/dotenv.sh"
+
+# Reads one key out of the dotenv stream and decodes it into DECODED (empty when
+# the key is absent).
+dotenv_lookup() {
+  local enc
+  enc=$(sed -n "s/^$1=//p" <<<"$SECRETS" | head -n1)
+  dotenv_decode "$enc"
+}
 
 SECRETS=""
 DOPPLER_FLY_TOKEN=""
@@ -34,7 +49,8 @@ if [ -n "${DOPPLER_TOKEN:-}" ]; then
     # shellcheck disable=SC2317  # both arms reachable depending on source vs exec
     return 1 2>/dev/null || exit 1
   fi
-  DOPPLER_FLY_TOKEN=$(sed -n 's/^FLY_API_TOKEN="\(.*\)"$/\1/p' <<<"$SECRETS" | head -n1)
+  dotenv_lookup FLY_API_TOKEN
+  DOPPLER_FLY_TOKEN=$DECODED
 fi
 
 if [ -n "${FLY_API_TOKEN_INPUT:-}" ]; then
@@ -62,7 +78,8 @@ export FLY_API_TOKEN
 # Not masked — org slugs are public.
 FLY_ORG_SLUG=""
 if [ -n "$SECRETS" ]; then
-  FLY_ORG_SLUG=$(sed -n 's/^FLY_ORG_SLUG="\(.*\)"$/\1/p' <<<"$SECRETS" | head -n1)
+  dotenv_lookup FLY_ORG_SLUG
+  FLY_ORG_SLUG=$DECODED
 fi
 if [ -n "$FLY_ORG_SLUG" ]; then
   echo "FLY_ORG_SLUG=$FLY_ORG_SLUG" >>"$GITHUB_ENV"

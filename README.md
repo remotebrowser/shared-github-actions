@@ -16,13 +16,18 @@ Installs the `doppler-export` shell script on `$PATH`. Consumers then pipe its o
 - shell: bash
   env:
     DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
-  run: doppler-export flyfleet github | flyctl secrets import --app flyfleet --stage
+  run: |
+    mapfile -d '' args < <(doppler-export flyfleet github --format=json \
+      | jq -j 'to_entries[] | .key + "=" + .value + "\u0000"')
+    flyctl secrets set --app flyfleet --stage "${args[@]}"
 ```
 
+Do not pipe the default `dotenv` output straight into `flyctl secrets import`. `import` strips the surrounding quotes but does not reverse the escaping, so any value holding a `"`, a `\` or a newline lands in the app with the backslashes still in it — a JSON service-account key arrives as `{\"type\": ...}` and fails to parse. `import` also truncates a value at an unquoted `#`, and stops reading (silently, without an error) at the first line over 64 KiB. Passing values over argv with `flyctl secrets set`, as above, has none of those problems. `deploy-fly` and `test-on-fly` already do this for you.
+
 `doppler-export <project> [config] [--format=dotenv|shell|json]`:
-- `dotenv` (default) — `KEY="VALUE"` per line. Pipes into `flyctl secrets import`, `docker --env-file <(...)`, or `>.env`.
+- `dotenv` (default) — `KEY="VALUE"` per line, with `\`, `"`, `$`, backtick, LF and CR escaped so every secret stays on one line. For `>.env` and real dotenv parsers. Decode the escaping before handing a value to a program.
 - `shell` — `export KEY='VALUE'` with single-quote escape. For `source <(doppler-export ... --format=shell)`.
-- `json` — single JSON object. For bespoke `jq` piping.
+- `json` — single JSON object. For bespoke `jq` piping, and the safest source when you need exact bytes.
 
 **Stderr output:**
 - One line per downloaded key name (for easy visual confirmation / piping to `grep`).
@@ -33,12 +38,12 @@ Installs the `doppler-export` shell script on `$PATH`. Consumers then pipe its o
 - Values shorter than 4 characters are silently not masked by GitHub. The script warns on stderr and names such keys.
 - Token comes from `DOPPLER_TOKEN` in the step's `env:`, not from `$GITHUB_ENV`.
 - Refuses to run under `pull_request_target` unless `ALLOW_PULL_REQUEST_TARGET=1`.
-- For multiline values (certs, SSH keys) prefer `--format=shell` or `--format=json`; dotenv output quotes them but downstream parsers vary.
+- For multiline values (certs, SSH keys) prefer `--format=shell` or `--format=json`; dotenv encodes their newlines as `\n` to keep each secret on one line, and downstream parsers vary in whether they decode it.
 - If you store a genuine secret in a key whose name doesn't match the heuristic (e.g. `API` without `_KEY`), rename it to include one of the recognized substrings — the script will not mask it otherwise.
 
 ### `deploy-fly`
 
-Deploy a Fly app. Builds a single dotenv stream of secrets and imports it with one `flyctl secrets import`, then `flyctl deploy --strategy <auto> --env GIT_REV=<github.sha>`. Strategy defaults to `bluegreen` for stateless apps; if the app has any volumes attached, the action auto-detects this (`flyctl volumes list`) and switches to `rolling` since bluegreen can't run a parallel green fleet against an exclusive volume. The stream is, in order:
+Deploy a Fly app. Builds a single stream of secrets and applies it with one `flyctl secrets set --stage` (values are passed over argv, so quotes, backslashes and newlines reach the app byte-for-byte), then `flyctl deploy --strategy <auto> --env GIT_REV=<github.sha>`. Strategy defaults to `bluegreen` for stateless apps; if the app has any volumes attached, the action auto-detects this (`flyctl volumes list`) and switches to `rolling` since bluegreen can't run a parallel green fleet against an exclusive volume. The stream is, in order:
 
 1. **Doppler** — every key from the configured Doppler project/config.
 2. **`extra-secrets`** input (optional) — additional `KEY=VALUE` lines from the workflow. Applied last, so a key here overrides the same key from Doppler.
