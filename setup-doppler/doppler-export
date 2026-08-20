@@ -67,7 +67,10 @@ SENSITIVE_RE='(KEY|TOKEN|PASSWORD|PASSWD|PWD)'
 jq -r 'to_entries[] | @base64' <<<"$json" | while read -r b64; do
   entry=$(printf '%s' "$b64" | base64 -d)
   k=$(jq -r '.key' <<<"$entry")
-  v=$(jq -r '.value' <<<"$entry")
+  # `jq -j` (no trailing newline) plus a sentinel byte, because `$( )` strips
+  # trailing newlines and a PEM value ends with one.
+  v=$(jq -j '.value' <<<"$entry"; printf X)
+  v=${v%X}
 
   # Mask only when the key name looks sensitive (case-insensitive).
   if [[ "${k^^}" =~ $SENSITIVE_RE ]]; then
