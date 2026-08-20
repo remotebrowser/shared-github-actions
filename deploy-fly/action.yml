@@ -164,11 +164,10 @@ runs:
                 echo "::error::${label} '${key}' references \$${ref}, which is not among the loaded secrets" >&2
                 exit 1
               fi
-              # SECRETS values are dotenv (double-quoted, doppler-export escaping). Strip the quotes
-              # and reverse the escaping in one left-to-right pass (every literal backslash was
-              # doubled, so there is no ambiguity); \n and \r decode to newline/CR.
-              enc=${enc#*=}; enc=${enc#\"}; enc=${enc%\"}
-              value=$(printf '%s' "$enc" | perl -pe 's/\\(.)/ $1 eq "n" ? "\n" : ($1 eq "r" ? "\r" : $1) /ge')
+              # SECRETS values carry the doppler-export dotenv escaping; dotenv_decode
+              # (from _lib/dotenv.sh, sourced by load-secrets.sh) reverses it.
+              dotenv_decode "${enc#*=}"
+              value=$DECODED
               printf '::add-mask::%s\n' "$value"
               RESOLVED+="${key}=${value}"$'\n'
             else
@@ -225,11 +224,16 @@ runs:
         fi
 
         if [ -n "$keys" ]; then
-          echo "Importing secrets:"
+          echo "Setting secrets:"
           printf '  %s\n' $keys
-          flyctl secrets import --app "$APP_NAME" --stage <<<"$SECRETS"
+          # Decoded values go over argv, which carries quotes, backslashes and real
+          # newlines; `secrets import` reads stdin line by line and would deliver the
+          # dotenv escaping verbatim. The `-` on stdin is what flyctl reads for a
+          # secret whose value is exactly "-" (see dotenv_to_args).
+          dotenv_to_args "$SECRETS"
+          flyctl secrets set --app "$APP_NAME" --stage "${SECRET_ARGS[@]}" <<<'-'
         else
-          echo "No secrets to import."
+          echo "No secrets to set."
         fi
 
     - name: Deploy
