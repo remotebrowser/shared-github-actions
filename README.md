@@ -99,6 +99,24 @@ To set plain (non-secret) runtime environment variables on the app, use `env` (o
       LOG_LEVEL=info
 ```
 
+To make the pushed image findable later, set `image-label`. Fly otherwise tags each release image `deployment-<ulid>`, which names nothing a caller can look up; a label derived from the commit publishes it as `registry.fly.io/<app>:<image-label>`, so the exact artifact a commit produced can be redeployed without a rebuild:
+
+```yaml
+- uses: remotebrowser/shared-github-actions/deploy-fly@v1
+  with:
+    app-name: flyfleet
+    image-label: git-${{ github.sha }}
+```
+
+That is what `image` consumes. Set it to an existing image reference and the action deploys that instead of building anything, which is how a rollback runs at pull speed rather than build speed. It is the same release otherwise — Doppler secrets are still synced, the strategy is still chosen from the app's volume count, machines are still started — so there is one deploy procedure rather than a separate rollback one. `dockerfile`, `build-args`, `build-secrets` and `image-label` are build-only and skipped when it is set:
+
+```yaml
+- uses: remotebrowser/shared-github-actions/deploy-fly@v1
+  with:
+    app-name: flyfleet
+    image: registry.fly.io/flyfleet:git-e6f01889abc
+```
+
 To keep the app warm after a deploy, set `auto-start-machines: true`. Once the deploy succeeds, the action lists the app's machines and proactively starts any that are `stopped` or `suspended`, so the first incoming request doesn't pay a cold start. Each machine is started independently and retried with backoff (5 tries, exponential); a machine that came up on its own between the list and start is treated as already started. It only starts machines that aren't running, and never edits `fly.toml` or the app's autostart/autostop config:
 
 ```yaml
