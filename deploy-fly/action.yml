@@ -86,6 +86,29 @@ inputs:
       Use this for credentials the build needs, e.g. a read token for a private package registry.
     required: false
     default: ""
+  image-label:
+    description: >
+      Tag to push the built image under, forwarded as `flyctl deploy --image-label`.
+      Fly defaults to `deployment-<ulid>`, which names nothing a caller can look up
+      later; passing something derived from the commit (e.g. `git-<sha>`) makes the
+      release image addressable as `registry.fly.io/<app>:<image-label>`, so it can
+      be redeployed later without a rebuild.
+
+      Ignored when `image` is set, since nothing is built or pushed in that case.
+    required: false
+    default: ""
+  image:
+    description: >
+      Deploy this already-built image instead of building one, forwarded as
+      `flyctl deploy --image`. Everything else the action does is unchanged, so a
+      rollback to a previously pushed image is the same release procedure as a
+      deploy minus the build: Doppler secrets are still synced, the strategy is
+      still chosen from the app's volume count, and machines are still started.
+
+      `dockerfile`, `build-args`, `build-secrets` and `image-label` are build-only
+      and are skipped when this is set.
+    required: false
+    default: ""
   auto-start-machines:
     description: >
       When "true", proactively start any stopped or suspended machines after a
@@ -244,6 +267,8 @@ runs:
         BUILD_ARGS: ${{ env.RESOLVED_BUILD_ARGS || inputs.build-args }}
         BUILD_SECRETS: ${{ env.RESOLVED_BUILD_SECRETS || inputs.build-secrets }}
         ENV_VARS: ${{ inputs.env }}
+        IMAGE: ${{ inputs.image }}
+        IMAGE_LABEL: ${{ inputs.image-label }}
       run: |
         set -euo pipefail
         if [ -z "${FLY_API_TOKEN:-}" ]; then
@@ -281,15 +306,26 @@ runs:
             env_flags+=(--env "$line")
           done <<<"$ENV_VARS"
         fi
-        flyctl deploy \
-          --app "${{ inputs.app-name }}" \
-          --config "${{ inputs.fly-toml }}" \
-          --dockerfile "${{ inputs.dockerfile }}" \
-          --strategy "$strategy" \
-          --local-only \
-          "${env_flags[@]}" \
-          "${build_arg_flags[@]}" \
-          "${build_secret_flags[@]}"
+        # An `image` is deployed as-is: no Dockerfile, no build context, no push, so every
+        # build-only flag is dropped rather than passed and ignored (flyctl rejects --dockerfile
+        # alongside --image). Everything before this point already ran, which is the point — a
+        # rollback to an existing image is this same release, minus the build.
+        deploy_flags=(
+          --app "${{ inputs.app-name }}"
+          --config "${{ inputs.fly-toml }}"
+          --strategy "$strategy"
+        )
+        if [ -n "$IMAGE" ]; then
+          echo "Deploying prebuilt image $IMAGE (no build)."
+          deploy_flags+=(--image "$IMAGE")
+        else
+          deploy_flags+=(--dockerfile "${{ inputs.dockerfile }}" --local-only)
+          if [ -n "$IMAGE_LABEL" ]; then
+            deploy_flags+=(--image-label "$IMAGE_LABEL")
+          fi
+          deploy_flags+=("${build_arg_flags[@]}" "${build_secret_flags[@]}")
+        fi
+        flyctl deploy "${deploy_flags[@]}" "${env_flags[@]}"
 
     - name: Start machines
       if: inputs.auto-start-machines == 'true'
