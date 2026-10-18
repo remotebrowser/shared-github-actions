@@ -100,6 +100,17 @@ for i in "${!names[@]}"; do
 done
 
 echo
+echo "== dotenv_encode matches doppler-export =="
+
+# load-secrets.sh encodes 1Password values with dotenv_encode, so they must sit
+# in the stream exactly as a Doppler value does.
+for i in "${!names[@]}"; do
+  name=${names[$i]}
+  dotenv_encode "${values[$i]}"
+  check "$name" "$(grep "^${name}=" <<<"$dotenv" | head -n1)" "${name}=${ENCODED}"
+done
+
+echo
 echo "== dotenv_to_args =="
 
 dotenv_to_args "$dotenv"

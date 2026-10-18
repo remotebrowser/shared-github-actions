@@ -22,6 +22,22 @@ dotenv_decode() {
   DECODED=${out%X}
 }
 
+# Encodes one value the way doppler-export does (its `dotenv)` case), leaving
+# `"VALUE"` in ENCODED, so a value from another source joins the same stream and
+# dotenv_decode gives back the same bytes.
+ENCODED=""
+dotenv_encode() {
+  local esc=$1
+  esc=${esc//\\/\\\\}
+  esc=${esc//\"/\\\"}
+  esc=${esc//\$/\\\$}
+  esc=${esc//\`/\\\`}
+  esc=${esc//$'\n'/\\n}
+  esc=${esc//$'\r'/\\r}
+  # shellcheck disable=SC2034  # read by the files that source this one
+  ENCODED="\"$esc\""
+}
+
 # Turns a dotenv stream into SECRET_ARGS, an array of decoded `KEY=VALUE` argv
 # words for `flyctl secrets set`. argv carries quotes, backslashes and real
 # newlines; `flyctl secrets import` reads stdin line by line and cannot. Blank

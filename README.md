@@ -46,7 +46,8 @@ Do not pipe the default `dotenv` output straight into `flyctl secrets import`. `
 Deploy a Fly app. Builds a single stream of secrets and applies it with one `flyctl secrets set --stage` (values are passed over argv, so quotes, backslashes and newlines reach the app byte-for-byte), then `flyctl deploy --strategy <auto> --env GIT_REV=<github.sha>`. Strategy defaults to `bluegreen` for stateless apps; if the app has any volumes attached, the action auto-detects this (`flyctl volumes list`) and switches to `rolling` since bluegreen can't run a parallel green fleet against an exclusive volume. The stream is, in order:
 
 1. **Doppler** — every key from the configured Doppler project/config.
-2. **`extra-secrets`** input (optional) — additional `KEY=VALUE` lines from the workflow. Applied last, so a key here overrides the same key from Doppler.
+2. **`onepassword-secrets`** input (optional): `KEY=op://<vault>/<item>/[section/]<field>` lines, each read from 1Password.
+3. **`extra-secrets`** input (optional) — additional `KEY=VALUE` lines from the workflow. Applied last, so a key here overrides the same key from Doppler or 1Password.
 
 `GIT_REV` is passed as a plain Fly env var (not a secret) via `flyctl deploy --env`, so the running app can self-report its deployed commit and the Machines API exposes it in `config.env` for status dashboards.
 
@@ -64,9 +65,24 @@ Deploy a Fly app. Builds a single stream of secrets and applies it with one `fly
       DEPLOY_ENV=${{ github.ref_name }}
 ```
 
-`fly-api-token` resolution order: explicit input wins, otherwise pulled from Doppler under the key `FLY_API_TOKEN`. If both are set and disagree, the input is used and a `::warning::` is logged. If neither is available, the action fails before any `flyctl` call.
+`fly-api-token` resolution order: explicit input wins, otherwise pulled from Doppler under the key `FLY_API_TOKEN`. An input that is an `op://` reference is read from 1Password first, and is not staged as an app secret. If both are set and disagree, the input is used and a `::warning::` is logged. If neither is available, the action fails before any `flyctl` call.
 
-`extra-secrets` values are not auto-masked in workflow logs — pass them via `${{ secrets.* }}` if they're sensitive. Stale-secret cleanup runs only when `doppler-token` is set, and operates against the full union of Doppler keys + `extra-secrets` keys, so none of these are ever flagged as stale. (Apps that used the previous behavior — where `GIT_REV` was a Fly secret — will see the stale `GIT_REV` secret cleaned up on the next deploy and replaced by the env var.)
+`extra-secrets` values are not auto-masked in workflow logs — pass them via `${{ secrets.* }}` if they're sensitive. Stale-secret cleanup runs only when `doppler-token` or `onepassword-secrets` is set, and operates against the full union of Doppler, 1Password and `extra-secrets` keys, so none of these are ever flagged as stale. (Apps that used the previous behavior — where `GIT_REV` was a Fly secret — will see the stale `GIT_REV` secret cleaned up on the next deploy and replaced by the env var.)
+
+To read secrets from 1Password, set `onepassword-token` to a service account token and list each secret in `onepassword-secrets`. A value uses the secret reference syntax of `op read` and `op run`, so the same reference works in a local `.env` file run through `op run`. The action installs the 1Password CLI only when `onepassword-token` is set, reads each reference with `op read`, masks each line of the value in the logs, and stages it with its exact bytes. A line that is not `KEY=op://...` or a reference that `op read` cannot read fails the deploy before any secret is set. `fly-api-token` can be a reference too, so the GitHub environment holds only the 1Password token:
+
+```yaml
+- uses: remotebrowser/shared-github-actions/deploy-fly@v1
+  with:
+    app-name: flyfleet
+    onepassword-token: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    fly-api-token: op://flyfleet-staging/FLY_API_TOKEN/credential
+    onepassword-secrets: |
+      DATABASE_URL=op://flyfleet-staging/DATABASE_URL/credential
+      SIGNING_KEY=op://flyfleet-staging/SIGNING_KEY/credential
+```
+
+Each Fly secret of the app that is not in the stream is unset on the next deploy, as with Doppler, so keep every secret of the app in the list.
 
 To pass build-time arguments to the image build, use `build-args` (one `KEY=VALUE` per line, blank and `#` comment lines ignored). Each line is forwarded as `--build-arg KEY=VALUE` to `flyctl deploy`:
 
@@ -78,7 +94,7 @@ To pass build-time arguments to the image build, use `build-args` (one `KEY=VALU
       BROWSER_BACKEND=daytona
 ```
 
-For build-time credentials that must NOT persist in the image (e.g. a read token for a private package registry), use `build-secrets` instead — same `KEY=VALUE` per line format, forwarded as `--build-secret KEY=VALUE` (a BuildKit secret the Dockerfile reads via `--mount=type=secret,id=KEY`). Both inputs support the `$NAME` / `${NAME}` reference to a fetched Doppler/`extra-secrets` value; a literal value is passed through as-is (mask it via `${{ secrets.* }}`):
+For build-time credentials that must NOT persist in the image (e.g. a read token for a private package registry), use `build-secrets` instead — same `KEY=VALUE` per line format, forwarded as `--build-secret KEY=VALUE` (a BuildKit secret the Dockerfile reads via `--mount=type=secret,id=KEY`). Both inputs support the `$NAME` / `${NAME}` reference to a fetched Doppler/1Password/`extra-secrets` value; a literal value is passed through as-is (mask it via `${{ secrets.* }}`):
 
 ```yaml
 - uses: remotebrowser/shared-github-actions/deploy-fly@v1
@@ -88,7 +104,7 @@ For build-time credentials that must NOT persist in the image (e.g. a read token
       github_token=${{ secrets.GITHUB_TOKEN }}
 ```
 
-To set plain (non-secret) runtime environment variables on the app, use `env` (one `KEY=VALUE` per line, blank and `#` comment lines ignored). Each line is forwarded as `--env KEY=VALUE` to `flyctl deploy`, alongside the built-in `GIT_REV`. Values land in the app config (visible via `flyctl config` and the Machines API), so keep secrets in `extra-secrets`/Doppler. A `GIT_REV=...` line here overrides the built-in one:
+To set plain (non-secret) runtime environment variables on the app, use `env` (one `KEY=VALUE` per line, blank and `#` comment lines ignored). Each line is forwarded as `--env KEY=VALUE` to `flyctl deploy`, alongside the built-in `GIT_REV`. Values land in the app config (visible via `flyctl config` and the Machines API), so keep secrets in `extra-secrets`/`onepassword-secrets`/Doppler. A `GIT_REV=...` line here overrides the built-in one:
 
 ```yaml
 - uses: remotebrowser/shared-github-actions/deploy-fly@v1
@@ -108,7 +124,7 @@ To make the pushed image findable later, set `image-label`. Fly otherwise tags e
     image-label: git-${{ github.sha }}
 ```
 
-That is what `image` consumes. Set it to an existing image reference and the action deploys that instead of building anything, which is how a rollback runs at pull speed rather than build speed. It is the same release otherwise — Doppler secrets are still synced, the strategy is still chosen from the app's volume count, machines are still started — so there is one deploy procedure rather than a separate rollback one. `dockerfile`, `build-args`, `build-secrets` and `image-label` are build-only and skipped when it is set:
+That is what `image` consumes. Set it to an existing image reference and the action deploys that instead of building anything, which is how a rollback runs at pull speed rather than build speed. It is the same release otherwise — secrets are still synced, the strategy is still chosen from the app's volume count, machines are still started — so there is one deploy procedure rather than a separate rollback one. `dockerfile`, `build-args`, `build-secrets` and `image-label` are build-only and skipped when it is set:
 
 ```yaml
 - uses: remotebrowser/shared-github-actions/deploy-fly@v1
