@@ -1,8 +1,8 @@
 name: Deploy to Fly
 description: >
-  Deploy an app to Fly.io. If a Doppler token is provided, also syncs secrets
-  from Doppler into the Fly app (importing current keys and unsetting stale
-  ones) before deploying.
+  Deploy an app to Fly.io. If a Doppler token or 1Password secrets are
+  provided, also syncs those secrets into the Fly app (importing current keys
+  and unsetting stale ones) before deploying.
 
 inputs:
   fly-api-token:
@@ -10,7 +10,8 @@ inputs:
       Fly API token. Optional when doppler-token is set AND Doppler holds a
       FLY_API_TOKEN secret — in that case the value is pulled from Doppler.
       Required otherwise. When both are provided, the input wins and a
-      ::warning:: is emitted if the values differ.
+      ::warning:: is emitted if the values differ. An op:// reference is read
+      from 1Password with onepassword-token, and is not staged as an app secret.
     required: false
     default: ""
   app-name:
@@ -34,11 +35,31 @@ inputs:
   doppler-config:
     description: Doppler config / environment name. Required when doppler-token is set.
     required: false
+  onepassword-token:
+    description: >
+      1Password service account token, passed to `op` as
+      OP_SERVICE_ACCOUNT_TOKEN. Required when onepassword-secrets is set or
+      fly-api-token is an op:// reference. The 1Password CLI is installed only
+      when this is set.
+    required: false
+    default: ""
+  onepassword-secrets:
+    description: >
+      KEY=op://<vault>/<item>/[section/]<field> lines, one per line: the secret
+      reference syntax of `op read` and `op run`. Each value is read from
+      1Password with onepassword-token, masked in the logs, and set as a Fly
+      secret with its exact bytes. Blank lines and `#` comment lines are
+      ignored. Applied after Doppler and before extra-secrets.
+
+      When set, each Fly secret of the app that is not in the stream (Doppler,
+      1Password and extra-secrets keys) is unset, as with doppler-token.
+    required: false
+    default: ""
   extra-secrets:
     description: >
       Additional KEY=VALUE pairs (one per line, dotenv format) to set as Fly
-      secrets. Applied after Doppler, so a key here overrides the same key
-      from Doppler. Values are not auto-masked — reference them through
+      secrets. Applied after Doppler and 1Password, so a key here overrides the
+      same key from either. Values are not auto-masked — reference them through
       the workflow's secrets context if they're sensitive.
     required: false
     default: ""
@@ -59,7 +80,7 @@ inputs:
 
       Use this only for non-sensitive values: `--env` vars are stored in the app
       config (visible via `flyctl config`/the Machines API). For secrets use
-      `extra-secrets` or Doppler instead.
+      `extra-secrets`, `onepassword-secrets` or Doppler instead.
     required: false
     default: ""
   build-args:
@@ -68,7 +89,7 @@ inputs:
       `flyctl deploy`. Blank lines and `#` comment lines are ignored.
 
       If a VALUE is exactly `$NAME` or `${NAME}`, it is replaced with the value of the
-      Doppler/extra secret NAME this action already fetched (no second fetch), so a secret
+      Doppler/1Password/extra secret NAME this action already fetched (no second fetch), so a secret
       can be passed as a build arg without re-declaring it in the workflow. The name must
       resolve or the deploy fails; resolved values are masked in the logs. A literal `$` at
       the start of a value is only kept when it is not a valid `$NAME` reference.
@@ -81,7 +102,7 @@ inputs:
       so unlike a build-arg the value never lands in the image or its history). Blank lines and
       `#` comment lines are ignored.
 
-      Values support the same `$NAME` / `${NAME}` reference to a fetched Doppler/extra secret as
+      Values support the same `$NAME` / `${NAME}` reference to a fetched Doppler/1Password/extra secret as
       build-args (resolved once, masked in the logs); a literal value is passed through as-is.
       Use this for credentials the build needs, e.g. a read token for a private package registry.
     required: false
@@ -102,7 +123,7 @@ inputs:
       Deploy this already-built image instead of building one, forwarded as
       `flyctl deploy --image`. Everything else the action does is unchanged, so a
       rollback to a previously pushed image is the same release procedure as a
-      deploy minus the build: Doppler secrets are still synced, the strategy is
+      deploy minus the build: secrets are still synced, the strategy is
       still chosen from the app's volume count, and machines are still started.
 
       `dockerfile`, `build-args`, `build-secrets` and `image-label` are build-only
@@ -142,6 +163,10 @@ runs:
         install -m 0755 "$GITHUB_ACTION_PATH/../setup-doppler/doppler-export" "$HOME/.local/bin/doppler-export"
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+    - name: Install the 1Password CLI
+      if: inputs.onepassword-token != ''
+      uses: 1password/install-cli-action@v4.1.0
+
     - name: Setup flyctl
       uses: superfly/flyctl-actions/setup-flyctl@master
 
@@ -152,6 +177,8 @@ runs:
         DOPPLER_PROJECT: ${{ inputs.doppler-project }}
         DOPPLER_CONFIG: ${{ inputs.doppler-config }}
         FLY_API_TOKEN_INPUT: ${{ inputs.fly-api-token }}
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ inputs.onepassword-token }}
+        ONEPASSWORD_SECRETS: ${{ inputs.onepassword-secrets }}
         EXTRA_SECRETS: ${{ inputs.extra-secrets }}
         DOPPLER_VAR_PREFIX: ${{ inputs.doppler-var-prefix }}
         APP_NAME: ${{ inputs.app-name }}
@@ -159,7 +186,8 @@ runs:
         BUILD_SECRETS_RAW: ${{ inputs.build-secrets }}
       run: |
         set -euo pipefail
-        # Resolves FLY_API_TOKEN (input vs Doppler) and exports SECRETS.
+        # Resolves FLY_API_TOKEN (input, or an op:// reference in it, vs Doppler)
+        # and exports SECRETS.
         . "$GITHUB_ACTION_PATH/../_lib/load-secrets.sh"
 
         # Resolve build-args / build-secrets here, where SECRETS (the full dotenv, before the prefix
@@ -223,10 +251,11 @@ runs:
 
         keys=$(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' <<<"$SECRETS" | sort -u)
 
-        # Stale cleanup only runs when Doppler is the source of truth and we have
-        # a non-empty wanted-set — without either, we have no full picture and
-        # could wipe manually-set secrets or mass-mark everything as stale.
-        if [ -n "$DOPPLER_TOKEN" ] && [ -n "$keys" ]; then
+        # Stale cleanup only runs when Doppler or 1Password is the source of truth
+        # and we have a non-empty wanted-set — without either, we have no full
+        # picture and could wipe manually-set secrets or mass-mark everything as
+        # stale.
+        if { [ -n "$DOPPLER_TOKEN" ] || [ -n "$ONEPASSWORD_SECRETS" ]; } && [ -n "$keys" ]; then
           current=$(flyctl secrets list --app "$APP_NAME" --json | jq -r '.[].name' | sort -u)
           # Guard against jq filter / flyctl schema drift: if the field name
           # changes again, jq -r yields literal "null" strings and we'd "unset"

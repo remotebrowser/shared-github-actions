@@ -7,17 +7,22 @@
 #   DOPPLER_TOKEN        optional; when set, secrets are fetched from Doppler
 #   DOPPLER_PROJECT      required when DOPPLER_TOKEN is set
 #   DOPPLER_CONFIG       required when DOPPLER_TOKEN is set
-#   FLY_API_TOKEN_INPUT  optional; the caller's `fly-api-token` action input
-#   EXTRA_SECRETS        optional; dotenv lines appended after Doppler keys
+#   FLY_API_TOKEN_INPUT  optional; the caller's `fly-api-token` action input,
+#                        either the token or an op:// reference to it
+#   ONEPASSWORD_SECRETS  optional; KEY=op://<vault>/<item>/[section/]<field>
+#                        lines, each read with `op read`, appended after Doppler
+#   OP_SERVICE_ACCOUNT_TOKEN  required when any op:// reference is given
+#   EXTRA_SECRETS        optional; dotenv lines appended after 1Password keys
 #
 # Outputs (exported into caller shell):
 #   FLY_API_TOKEN  resolved token (also written to $GITHUB_ENV and ::add-mask::'d)
 #   FLY_ORG_SLUG   extracted from Doppler when present (also written to $GITHUB_ENV).
 #                  Empty if Doppler doesn't have it. Callers needing --org should
 #                  check and either fall back or fail with a clearer error.
-#   SECRETS        full dotenv stream: Doppler + EXTRA_SECRETS. Values are still
-#                  dotenv-escaped — run each through `dotenv_decode` before
-#                  handing it to anything that isn't a dotenv parser.
+#   SECRETS        full dotenv stream: Doppler + 1Password + EXTRA_SECRETS.
+#                  Values are still dotenv-escaped — run each through
+#                  `dotenv_decode` before handing it to anything that isn't a
+#                  dotenv parser.
 #                  (GIT_REV is set as a regular Fly env var by the caller via
 #                  `flyctl deploy --env`, not as a secret, so the Machines API
 #                  exposes it in `config.env`.)
@@ -40,6 +45,51 @@ dotenv_lookup() {
   dotenv_decode "$enc"
 }
 
+# Reads one 1Password secret reference into OP_VALUE and masks each line of it.
+# `op` authenticates with OP_SERVICE_ACCOUNT_TOKEN from the env.
+OP_VALUE=""
+op_read() {
+  local label=$1 ref=$2 out line
+  if [ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
+    echo "::error::${label} is a 1Password reference, but onepassword-token is not set" >&2
+    return 1
+  fi
+  # `$( )` strips trailing newlines and a PEM value ends with one, so close the
+  # substitution with a sentinel byte. `&&` keeps the exit status of a failed read.
+  if ! out=$(op read --no-newline "$ref" && printf X); then
+    echo "::error::op read failed for ${label}" >&2
+    return 1
+  fi
+  OP_VALUE=${out%X}
+  while IFS= read -r line; do
+    if [ -n "$line" ]; then
+      printf '::add-mask::%s\n' "$line"
+    fi
+  done <<<"$OP_VALUE"
+}
+
+# Reads each KEY=op://... line into OP_SECRETS, encoded like the Doppler stream.
+# An error names the line number and never the line, which can hold a secret
+# pasted by mistake.
+OP_SECRETS=""
+load_onepassword_secrets() {
+  local line key n=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    if [ -z "$line" ] || [[ "$line" =~ ^[[:space:]]*# ]]; then
+      continue
+    fi
+    if ! [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*=op:// ]]; then
+      echo "::error::onepassword-secrets line ${n} is not KEY=op://<vault>/<item>/[section/]<field>" >&2
+      return 1
+    fi
+    key=${line%%=*}
+    op_read "onepassword-secrets ${key}" "${line#*=}" || return 1
+    dotenv_encode "$OP_VALUE"
+    OP_SECRETS+="${key}=${ENCODED}"$'\n'
+  done <<<"$1"
+}
+
 SECRETS=""
 DOPPLER_FLY_TOKEN=""
 if [ -n "${DOPPLER_TOKEN:-}" ]; then
@@ -51,6 +101,13 @@ if [ -n "${DOPPLER_TOKEN:-}" ]; then
   fi
   dotenv_lookup FLY_API_TOKEN
   DOPPLER_FLY_TOKEN=$DECODED
+fi
+
+# A reference is read here only: the token is not staged as an app secret.
+if [[ "${FLY_API_TOKEN_INPUT:-}" == op://* ]]; then
+  # shellcheck disable=SC2317  # both arms reachable depending on source vs exec
+  op_read fly-api-token "$FLY_API_TOKEN_INPUT" || return 1 2>/dev/null || exit 1
+  FLY_API_TOKEN_INPUT=$OP_VALUE
 fi
 
 if [ -n "${FLY_API_TOKEN_INPUT:-}" ]; then
@@ -86,6 +143,12 @@ if [ -n "$FLY_ORG_SLUG" ]; then
 fi
 export FLY_ORG_SLUG
 
-# Final stream: Doppler first, then EXTRA_SECRETS (last wins on dup keys).
-SECRETS=$(printf '%s\n%s\n' "$SECRETS" "${EXTRA_SECRETS:-}")
+if [ -n "${ONEPASSWORD_SECRETS:-}" ]; then
+  # shellcheck disable=SC2317  # both arms reachable depending on source vs exec
+  load_onepassword_secrets "$ONEPASSWORD_SECRETS" || return 1 2>/dev/null || exit 1
+fi
+
+# Final stream: Doppler first, then 1Password, then EXTRA_SECRETS (last wins on
+# dup keys).
+SECRETS=$(printf '%s\n%s\n%s\n' "$SECRETS" "$OP_SECRETS" "${EXTRA_SECRETS:-}")
 export SECRETS
